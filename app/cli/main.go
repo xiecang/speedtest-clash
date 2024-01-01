@@ -2,7 +2,6 @@ package main
 
 import (
 	"flag"
-	C "github.com/metacubex/mihomo/constant"
 	"github.com/phuslu/log"
 	"github.com/xiecang/speedtest-clash/speedtest"
 	"strings"

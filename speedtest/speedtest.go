@@ -255,6 +255,35 @@ func (t *Test) AliveProxies() ([]CProxy, error) {
 	return proxies, nil
 }
 
+type CProxyWithResult struct {
+	Proxies CProxy
+	Results Result
+}
+
+// AliveProxiesWithResult 可访问的节点以及结果
+func (t *Test) AliveProxiesWithResult() ([]CProxyWithResult, error) {
+	if !t._testedSpeed {
+		_, _ = t.TestSpeed()
+	}
+	var (
+		proxies []CProxyWithResult
+	)
+
+	for _, result := range t.results {
+		if !result.Alive() {
+			continue
+		}
+		var name = result.Name
+		var p = t.proxies[name]
+		proxies = append(proxies, CProxyWithResult{
+			Proxies: p,
+			Results: result,
+		})
+	}
+
+	return proxies, nil
+}
+
 func (t *Test) Proxies() map[string]CProxy {
 	return t.proxies
 }
