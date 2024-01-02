@@ -58,8 +58,8 @@ const (
 	GPTTestURLWeb     = "https://chat.openai.com/"
 	GPTTrace          = "https://chat.openai.com/cdn-cgi/trace"
 
-	errMsg = "Something went wrong. You may be connected to a disallowed ISP. "
-	// 延迟
+	errMsg              = "Something went wrong. You may be connected to a disallowed ISP. "
+	DefaultLivenessAddr = "https://speed.cloudflare.com/__down?bytes=%d"
 )
 
 var (
@@ -144,8 +144,6 @@ type Test struct {
 func checkOptions(options *Options) (bool, string) {
 	if options.ConfigPath == "" {
 		return false, "配置不能为空"
-	} else {
-
 	}
 	if options.DownloadSize == 0 {
 		options.DownloadSize = 10 * 1024 * 1024
@@ -155,6 +153,9 @@ func checkOptions(options *Options) (bool, string) {
 	}
 	if options.SortField == "" {
 		options.SortField = SortFieldBandwidth
+	}
+	if options.LivenessAddr == "" {
+		options.LivenessAddr = DefaultLivenessAddr
 	}
 
 	return true, ""
