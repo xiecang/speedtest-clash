@@ -465,6 +465,7 @@ func loadProxies(buf []byte, ignoreProxyError bool) (map[string]CProxy, error) {
 		if err != nil {
 			if ignoreProxyError {
 				log.Warnln("ParseProxy error: proxy %d: %s", i, err)
+				continue
 			} else {
 				return nil, fmt.Errorf("proxy %d: %w", i, err)
 			}
