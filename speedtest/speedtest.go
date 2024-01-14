@@ -67,14 +67,15 @@ var (
 )
 
 type Options struct {
-	LivenessAddr string        `json:"liveness_addr"` // 测速时调用的地址，格式如 https://speed.cloudflare.com/__down?bytes=%d
-	DownloadSize int           `json:"download_size"` // 测速时下载的文件大小，单位为 bit(使用默认cloudflare的话)，默认下载10M
-	Timeout      time.Duration `json:"timeout"`       // 每个代理测速的超时时间
-	ConfigPath   string        `json:"config_path"`   // 配置文件地址，可以为 URL 或者本地路径，多个使用 | 分隔
-	FilterRegex  string        `json:"filter_regex"`  // 通过名字过滤代理，只测试过滤部分，格式为正则，默认全部测
-	SortField    SortField     `json:"sort_field"`    // 排序方式，b 带宽 t 延迟
-	Concurrent   int           `json:"concurrent"`    // 下载并发数
-	TestGPT      bool          `json:"test_gpt"`
+	LivenessAddr     string        `json:"liveness_addr"`      // 测速时调用的地址，格式如 https://speed.cloudflare.com/__down?bytes=%d
+	DownloadSize     int           `json:"download_size"`      // 测速时下载的文件大小，单位为 bit(使用默认cloudflare的话)，默认下载10M
+	Timeout          time.Duration `json:"timeout"`            // 每个代理测速的超时时间
+	ConfigPath       string        `json:"config_path"`        // 配置文件地址，可以为 URL 或者本地路径，多个使用 | 分隔
+	FilterRegex      string        `json:"filter_regex"`       // 通过名字过滤代理，只测试过滤部分，格式为正则，默认全部测
+	SortField        SortField     `json:"sort_field"`         // 排序方式，b 带宽 t 延迟
+	Concurrent       int           `json:"concurrent"`         // 下载并发数
+	TestGPT          bool          `json:"test_gpt"`           // 是否检测节点支持 GPT
+	IgnoreProxyError bool          `json:"ignore_proxy_error"` // 是否忽略个别节点错误，完成测速
 }
 
 var (
@@ -171,9 +172,12 @@ func NewTest(options Options) (*Test, error) {
 }
 
 func (t *Test) TestSpeed() ([]Result, error) {
-	var allProxies, err = ReadProxies(t.options.ConfigPath)
+	var allProxies, err = ReadProxies(t.options.ConfigPath, t.options.IgnoreProxyError)
 	if err != nil {
 		return nil, err
+	}
+	if len(allProxies) == 0 {
+		return nil, fmt.Errorf("no proxies found")
 	}
 	t.proxies = allProxies
 	var filteredProxies = filterProxies(t.options.FilterRegex, allProxies)
@@ -320,7 +324,7 @@ func (t *Test) AliveProxiesToJson() ([]byte, error) {
 }
 
 // ReadProxies 从网络下载或者本地读取配置文件 configPathConfig 是配置地址，多个之间用 | 分割
-func ReadProxies(configPathConfig string) (map[string]CProxy, error) {
+func ReadProxies(configPathConfig string, ignoreProxyError bool) (map[string]CProxy, error) {
 	var allProxies = make(map[string]CProxy)
 	for _, configPath := range strings.Split(configPathConfig, "|") {
 		var body []byte
@@ -341,9 +345,14 @@ func ReadProxies(configPathConfig string) (map[string]CProxy, error) {
 			continue
 		}
 
-		lps, err := loadProxies(body)
+		lps, err := loadProxies(body, ignoreProxyError)
 		if err != nil {
-			return nil, fmt.Errorf("failed to load proxies: %s", err)
+			if ignoreProxyError {
+				log.Warnln("failed to load proxies: %s", err)
+				continue
+			} else {
+				return nil, fmt.Errorf("failed to load proxies: %s", err)
+			}
 		}
 
 		for k, p := range lps {
@@ -440,7 +449,7 @@ func filterProxies(filter string, proxies map[string]CProxy) map[string]CProxy {
 	return filteredProxies
 }
 
-func loadProxies(buf []byte) (map[string]CProxy, error) {
+func loadProxies(buf []byte, ignoreProxyError bool) (map[string]CProxy, error) {
 	rawCfg := &RawConfig{
 		Proxies: []map[string]any{},
 	}
@@ -454,24 +463,48 @@ func loadProxies(buf []byte) (map[string]CProxy, error) {
 	for i, config := range proxiesConfig {
 		proxy, err := adapter.ParseProxy(config)
 		if err != nil {
-			return nil, fmt.Errorf("proxy %d: %w", i, err)
+			if ignoreProxyError {
+				log.Warnln("ParseProxy error: proxy %d: %s", i, err)
+			} else {
+				return nil, fmt.Errorf("proxy %d: %w", i, err)
+			}
 		}
 
 		if _, exist := proxies[proxy.Name()]; exist {
-			return nil, fmt.Errorf("proxy %s is the duplicate name", proxy.Name())
+			if ignoreProxyError {
+				log.Warnln("proxy %s is the duplicate name, use first one", proxy.Name())
+				continue
+			} else {
+				return nil, fmt.Errorf("proxy %s is the duplicate name", proxy.Name())
+			}
 		}
 		proxies[proxy.Name()] = CProxy{Proxy: proxy, SecretConfig: config}
 	}
 	for name, config := range providersConfig {
 		if name == provider.ReservedName {
-			return nil, fmt.Errorf("can not defined a provider called `%s`", provider.ReservedName)
+			if ignoreProxyError {
+				log.Warnln("can not defined a provider called `%s`", provider.ReservedName)
+				continue
+			} else {
+				return nil, fmt.Errorf("can not defined a provider called `%s`", provider.ReservedName)
+			}
 		}
 		pd, err := provider.ParseProxyProvider(name, config)
 		if err != nil {
-			return nil, fmt.Errorf("parse proxy provider %s error: %w", name, err)
+			if ignoreProxyError {
+				log.Warnln("parse proxy provider %s error: %s", name, err)
+				continue
+			} else {
+				return nil, fmt.Errorf("parse proxy provider %s error: %w", name, err)
+			}
 		}
 		if err := pd.Initial(); err != nil {
-			return nil, fmt.Errorf("initial proxy provider %s error: %w", pd.Name(), err)
+			if ignoreProxyError {
+				log.Warnln("initial proxy provider %s error: %s", pd.Name(), err)
+				continue
+			} else {
+				return nil, fmt.Errorf("initial proxy provider %s error: %w", pd.Name(), err)
+			}
 		}
 		for _, proxy := range pd.Proxies() {
 			var c = make(map[string]any)
