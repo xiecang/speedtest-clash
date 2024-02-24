@@ -87,6 +87,10 @@ var (
 	cacheTimeout    = 30 * time.Minute
 )
 
+func SetCacheTimeout(t time.Duration) {
+	cacheTimeout = t
+}
+
 type resultCache struct {
 	result    *Result
 	cacheTime time.Time
