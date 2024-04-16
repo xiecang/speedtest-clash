@@ -39,10 +39,11 @@ type Result struct {
 	Bandwidth float64
 	TTFB      time.Duration
 	GPTResult
+	URLForTest map[string]bool
 }
 
 func (r *Result) Alive() bool {
-	return !(r.TTFB == 0 && r.Bandwidth == 0)
+	return r.Bandwidth > 0 && r.TTFB > 0
 }
 
 type SortField string
@@ -76,6 +77,7 @@ type Options struct {
 	Concurrent       int           `json:"concurrent"`         // 下载并发数
 	TestGPT          bool          `json:"test_gpt"`           // 是否检测节点支持 GPT
 	IgnoreProxyError bool          `json:"ignore_proxy_error"` // 是否忽略个别节点错误，完成测速
+	URLForTest       []string      `json:"url_for_test"`       // 测试 URL 是否可访问
 }
 
 var (
@@ -397,10 +399,15 @@ func TestSpeed(proxies map[string]CProxy, options *Options) ([]Result, error) {
 			case C.Shadowsocks, C.ShadowsocksR, C.Snell, C.Socks5, C.Http, C.Vmess, C.Vless, C.Trojan, C.Hysteria, C.Hysteria2, C.WireGuard, C.Tuic:
 				result := TestProxyConcurrent(name, proxy, options)
 
-				if options.TestGPT {
-					result.GPTResult = TestChatGPTAccess(proxy, options.Timeout)
-				}
+				if result.Alive() {
+					if options.TestGPT {
+						result.GPTResult = TestChatGPTAccess(proxy, options.Timeout)
+					}
 
+					if options.URLForTest != nil {
+						result.URLForTest = TestURLAvailable(options.URLForTest, proxy, options.Timeout)
+					}
+				}
 				results = append(results, *result)
 
 				// add cache
@@ -604,6 +611,7 @@ func TestProxy(name string, proxy C.Proxy, downloadSize int, timeout time.Durati
 	resp, err := client.Get(fmt.Sprintf(livenessObject, downloadSize))
 	if err != nil {
 		//log.Debugln("failed to test proxy: %s", err)
+		log.Infoln("failed to test proxy: %s", err)
 		return &Result{Name: name, Bandwidth: -1, TTFB: -1}, 0
 	}
 	defer func(Body io.ReadCloser) {
@@ -843,4 +851,38 @@ func TestChatGPTAccess(proxy C.Proxy, timeout time.Duration) GPTResult {
 		r.IOS = r.Web
 	}
 	return r
+}
+
+func TestURLAvailable(urls []string, proxy C.Proxy, timeout time.Duration) map[string]bool {
+	if len(urls) == 0 {
+		return nil
+	}
+	var res = sync.Map{}
+	wg := sync.WaitGroup{}
+	wg.Add(len(urls))
+
+	for _, url := range urls {
+
+		go func(url string) {
+			defer wg.Done()
+			client := getClient(proxy, timeout)
+			resp, err := client.Get(url)
+			if err != nil {
+				res.Store(url, false)
+				return
+			}
+			if resp.StatusCode-http.StatusOK > 100 {
+				res.Store(url, false)
+				return
+			}
+			res.Store(url, true)
+		}(url)
+	}
+	wg.Wait()
+	var result = make(map[string]bool)
+	res.Range(func(key, value interface{}) bool {
+		result[key.(string)] = value.(bool)
+		return true
+	})
+	return result
 }
