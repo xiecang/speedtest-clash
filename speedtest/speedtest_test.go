@@ -2,6 +2,7 @@ package speedtest
 
 import (
 	"encoding/json"
+	"github.com/metacubex/mihomo/adapter"
 	"reflect"
 	"testing"
 	"time"
@@ -90,6 +91,48 @@ func Test_TestSpeed(t *testing.T) {
 			}
 			if !reflect.DeepEqual(got, tt.want) {
 				t.Errorf("TestSpeed() got = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func Test_testChatGPTAccessWeb(t *testing.T) {
+	type args struct {
+		config  map[string]any
+		timeout time.Duration
+	}
+	tests := []struct {
+		name string
+		args args
+		want GPTResult
+	}{
+		{
+			name: "1",
+			args: args{
+				config: map[string]any{
+					"name":             "gpt",
+					"server":           "120.234.147.175",
+					"port":             41492,
+					"type":             "vmess",
+					"uuid":             "418048af-a293-4b99-9b0c-98ca3580dd24",
+					"alterId":          64,
+					"cipher":           "auto",
+					"tls":              false,
+					"skip-cert-verify": true,
+					"udp":              true,
+				},
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			proxy, err := adapter.ParseProxy(tt.args.config)
+			if err != nil {
+				t.Errorf("parse config failed: %v", err)
+				return
+			}
+			if got := TestChatGPTAccess(proxy, tt.args.timeout); got != tt.want {
+				t.Errorf("testChatGPTAccessWeb() = %v, want %v", got, tt.want)
 			}
 		})
 	}

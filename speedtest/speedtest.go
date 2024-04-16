@@ -611,7 +611,6 @@ func TestProxy(name string, proxy C.Proxy, downloadSize int, timeout time.Durati
 	resp, err := client.Get(fmt.Sprintf(livenessObject, downloadSize))
 	if err != nil {
 		//log.Debugln("failed to test proxy: %s", err)
-		log.Infoln("failed to test proxy: %s", err)
 		return &Result{Name: name, Bandwidth: -1, TTFB: -1}, 0
 	}
 	defer func(Body io.ReadCloser) {
