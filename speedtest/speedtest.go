@@ -56,7 +56,7 @@ const (
 
 	GPTTestURLAndroid = "https://android.chat.openai.com"
 	GPTTestURLIOS     = "https://ios.chat.openai.com/"
-	GPTTestURLWeb     = "https://chat.openai.com/"
+	GPTTestURLWeb     = "https://chatgpt.com/"
 	GPTTrace          = "https://chat.openai.com/cdn-cgi/trace"
 
 	errMsg              = "Something went wrong. You may be connected to a disallowed ISP. "
