@@ -336,13 +336,23 @@ func ReadProxies(configPathConfig string, ignoreProxyError bool) (map[string]CPr
 		var body []byte
 		var err error
 		if strings.HasPrefix(configPath, "http") {
-			var resp *http.Response
-			resp, err = http.Get(configPath)
+			resp, err := Request(&RequestOption{
+				Method:       http.MethodGet,
+				URL:          configPath,
+				Headers:      map[string]string{"User-Agent": "clash-meta"},
+				Timeout:      5 * time.Second,
+				RetryTimes:   3,
+				RetryTimeOut: 3 * time.Second,
+			})
 			if err != nil {
-				log.Warnln("failed to fetch config: %s", err)
-				continue
+				log.Warnln("failed to fetch config: %s, err: %s", configPath, err)
+				return nil, err
 			}
-			body, err = io.ReadAll(resp.Body)
+			if resp.StatusCode != http.StatusOK {
+				log.Warnln("failed to fetch config: %s, status code: %d", configPath, resp.StatusCode)
+				return nil, fmt.Errorf("failed to fetch config: %s, status code: %d", configPath, resp.StatusCode)
+			}
+			body = resp.Body
 		} else {
 			body, err = os.ReadFile(configPath)
 		}
