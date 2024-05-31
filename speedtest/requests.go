@@ -58,7 +58,10 @@ func request(option *RequestOption) (*XcResponse, error) {
 	)
 	option, err = checkedOption(option)
 	if err != nil {
-		return nil, err
+		if option.Verbose {
+			log.Errorln("checkedOption error: %v", err)
+		}
+		return nil, fmt.Errorf("checkedOption error: %w", err)
 	}
 	if option.Verbose {
 		log.Infoln(requestCurl(option))
@@ -77,8 +80,10 @@ func request(option *RequestOption) (*XcResponse, error) {
 
 	req, err = http.NewRequest(option.Method, option.URL, bytes.NewReader(option.Body))
 	if err != nil {
-		log.Errorln("http.NewRequest error: %v", err)
-		return nil, err
+		if option.Verbose {
+			log.Errorln("http.NewRequest error: %v", err)
+		}
+		return nil, fmt.Errorf("http.NewRequest error: %w", err)
 	}
 	for k, v := range option.Headers {
 		req.Header.Set(k, v)
@@ -86,8 +91,10 @@ func request(option *RequestOption) (*XcResponse, error) {
 
 	resp, err := client.Do(req)
 	if err != nil {
-		log.Errorln("client.Do error: %v", err)
-		return nil, err
+		if option.Verbose {
+			log.Errorln("client.Do error: %v", err)
+		}
+		return nil, fmt.Errorf("client.Do error: %w", err)
 	}
 	defer func(Body io.ReadCloser) {
 		_ = Body.Close()
