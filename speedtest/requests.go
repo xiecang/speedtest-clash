@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"time"
 )
 
@@ -23,6 +24,8 @@ type RequestOption struct {
 	RetryTimeOut time.Duration // 重试超时时间
 	// 详细日志
 	Verbose bool
+	// 代理链接
+	ProxyUrl *url.URL
 }
 
 type XcResponse struct {
@@ -71,6 +74,9 @@ func request(option *RequestOption) (*XcResponse, error) {
 		DialContext: (&net.Dialer{
 			Timeout: option.Timeout,
 		}).DialContext,
+	}
+	if option.ProxyUrl != nil {
+		transport.Proxy = http.ProxyURL(option.ProxyUrl)
 	}
 
 	client := &http.Client{
