@@ -28,7 +28,7 @@ Usage of speedtest-clash:
 
 ```golang
 import (
-"github.com/xiecang/speedtest-clash/speedtest"
+    "github.com/xiecang/speedtest-clash/speedtest"
 )
 
 var t, err = speedtest.NewTest(speedtest.Options{

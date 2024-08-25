@@ -14,6 +14,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"regexp"
 	"sort"
@@ -78,6 +79,7 @@ type Options struct {
 	TestGPT          bool          `json:"test_gpt"`           // 是否检测节点支持 GPT
 	IgnoreProxyError bool          `json:"ignore_proxy_error"` // 是否忽略个别节点错误，完成测速
 	URLForTest       []string      `json:"url_for_test"`       // 测试 URL 是否可访问
+	ProxyUrl         string        `json:"proxy_url"`          // ConfigPath 为网络链接时可使用指定代理下载
 }
 
 var (
@@ -142,6 +144,7 @@ type RawConfig struct {
 
 type Test struct {
 	options      *Options
+	proxyUrl     *url.URL
 	proxies      map[string]CProxy
 	results      []Result
 	aliveProxies []CProxy
@@ -172,13 +175,22 @@ func NewTest(options Options) (*Test, error) {
 	if ok, msg := checkOptions(&options); !ok {
 		return nil, fmt.Errorf("配置格式不正确: %s", msg)
 	}
+	var proxyUrl *url.URL
+	if options.ProxyUrl != "" {
+		var err error
+		if proxyUrl, err = url.Parse(options.ProxyUrl); err != nil {
+			return nil, fmt.Errorf("ProxyUrl 错误 %w", err)
+		}
+	}
+
 	return &Test{
-		options: &options,
+		options:  &options,
+		proxyUrl: proxyUrl,
 	}, nil
 }
 
 func (t *Test) TestSpeed() ([]Result, error) {
-	var allProxies, err = ReadProxies(t.options.ConfigPath, t.options.IgnoreProxyError)
+	var allProxies, err = ReadProxies(t.options.ConfigPath, t.options.IgnoreProxyError, t.proxyUrl)
 	if err != nil {
 		return nil, err
 	}
@@ -330,11 +342,10 @@ func (t *Test) AliveProxiesToJson() ([]byte, error) {
 }
 
 // ReadProxies 从网络下载或者本地读取配置文件 configPathConfig 是配置地址，多个之间用 | 分割
-func ReadProxies(configPathConfig string, ignoreProxyError bool) (map[string]CProxy, error) {
+func ReadProxies(configPathConfig string, ignoreProxyError bool, proxyUrl *url.URL) (map[string]CProxy, error) {
 	var allProxies = make(map[string]CProxy)
 	for _, configPath := range strings.Split(configPathConfig, "|") {
 		var body []byte
-		var err error
 		if strings.HasPrefix(configPath, "http") {
 			resp, err := Request(&RequestOption{
 				Method:       http.MethodGet,
@@ -343,31 +354,42 @@ func ReadProxies(configPathConfig string, ignoreProxyError bool) (map[string]CPr
 				Timeout:      5 * time.Second,
 				RetryTimes:   3,
 				RetryTimeOut: 3 * time.Second,
+				ProxyUrl:     proxyUrl,
 			})
 			if err != nil {
-				log.Warnln("failed to fetch config: %s, err: %s", configPath, err)
+				if ignoreProxyError {
+					log.Warnln("failed to fetch config: %s, err: %s", configPath, err)
+					continue
+				}
 				return nil, err
 			}
 			if resp.StatusCode != http.StatusOK {
-				log.Warnln("failed to fetch config: %s, status code: %d", configPath, resp.StatusCode)
+				if ignoreProxyError {
+					log.Warnln("failed to fetch config: %s, status code: %d", configPath, resp.StatusCode)
+					continue
+				}
 				return nil, fmt.Errorf("failed to fetch config: %s, status code: %d", configPath, resp.StatusCode)
 			}
 			body = resp.Body
 		} else {
+			var err error
 			body, err = os.ReadFile(configPath)
-		}
-		if err != nil {
-			log.Warnln("failed to read config: %s", err)
-			continue
+			if err != nil {
+				if ignoreProxyError {
+					log.Warnln("failed to read config: %s, err: %s", configPath, err)
+					continue
+				}
+				return nil, fmt.Errorf("failed to read config: %s, err: %s", configPath, err)
+			}
 		}
 
 		lps, err := loadProxies(body, ignoreProxyError)
 		if err != nil {
 			if ignoreProxyError {
-				log.Warnln("failed to load proxies: %s", err)
+				log.Warnln("failed to load proxies: %s, err: %s", configPath, err)
 				continue
 			} else {
-				return nil, fmt.Errorf("failed to load proxies: %s", err)
+				return nil, fmt.Errorf("failed to load proxies: %s, err: %s", configPath, err)
 			}
 		}
 
