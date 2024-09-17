@@ -902,7 +902,7 @@ func TestURLAvailable(urls []string, proxy C.Proxy, timeout time.Duration) map[s
 				res.Store(url, false)
 				return
 			}
-			if resp.StatusCode-http.StatusOK > 100 {
+			if resp.StatusCode-http.StatusOK > 200 {
 				res.Store(url, false)
 				return
 			}
