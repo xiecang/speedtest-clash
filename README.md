@@ -37,7 +37,6 @@ var t, err = speedtest.NewTest(speedtest.Options{
     ConfigPath:       configStr,
     SortField:        speedtest.SortFieldTTFB,
     Timeout:          30 * time.Second,
-    IgnoreProxyError: true,
     Concurrent:       5,
     URLForTest:       []string{"https://www.google.com"},
 })

@@ -80,7 +80,7 @@ func Test_TestSpeed(t *testing.T) {
 				t.Errorf("Invalid proxy: %v", err)
 				return
 			}
-			lps, err := loadProxies(bytes, tt.args.options.IgnoreProxyError, nil)
+			lps, err := loadProxies(bytes, nil)
 			if err != nil {
 				t.Errorf("Invalid proxy: %v", err)
 				return
@@ -142,7 +142,6 @@ func Test_testChatGPTAccessWeb(t *testing.T) {
 func TestReadProxies(t *testing.T) {
 	type args struct {
 		configPathConfig string
-		ignoreProxyError bool
 		proxyUrl         string
 	}
 	tests := []struct {
@@ -155,7 +154,6 @@ func TestReadProxies(t *testing.T) {
 			name: "test provider",
 			args: args{
 				configPathConfig: "test.yaml",
-				ignoreProxyError: true,
 				proxyUrl:         "http://127.0.0.1:7890",
 			},
 		},
@@ -167,7 +165,7 @@ func TestReadProxies(t *testing.T) {
 				t.Errorf("ReadProxies() Parse proxyUrl error = %v, wantErr %v", err, tt.wantErr)
 				return
 			}
-			got, err := ReadProxies(tt.args.configPathConfig, tt.args.ignoreProxyError, proxyUrl)
+			got, err := ReadProxies(tt.args.configPathConfig, proxyUrl)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("ReadProxies() error = %v, wantErr %v", err, tt.wantErr)
 				return

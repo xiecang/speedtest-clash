@@ -69,17 +69,16 @@ var (
 )
 
 type Options struct {
-	LivenessAddr     string        `json:"liveness_addr"`      // 测速时调用的地址，格式如 https://speed.cloudflare.com/__down?bytes=%d
-	DownloadSize     int           `json:"download_size"`      // 测速时下载的文件大小，单位为 bit(使用默认cloudflare的话)，默认下载10M
-	Timeout          time.Duration `json:"timeout"`            // 每个代理测速的超时时间
-	ConfigPath       string        `json:"config_path"`        // 配置文件地址，可以为 URL 或者本地路径，多个使用 | 分隔
-	FilterRegex      string        `json:"filter_regex"`       // 通过名字过滤代理，只测试过滤部分，格式为正则，默认全部测
-	SortField        SortField     `json:"sort_field"`         // 排序方式，b 带宽 t 延迟
-	Concurrent       int           `json:"concurrent"`         // 下载并发数
-	TestGPT          bool          `json:"test_gpt"`           // 是否检测节点支持 GPT
-	IgnoreProxyError bool          `json:"ignore_proxy_error"` // 是否忽略个别节点错误，完成测速
-	URLForTest       []string      `json:"url_for_test"`       // 测试 URL 是否可访问
-	ProxyUrl         string        `json:"proxy_url"`          // ConfigPath 为网络链接时可使用指定代理下载
+	LivenessAddr string        `json:"liveness_addr"` // 测速时调用的地址，格式如 https://speed.cloudflare.com/__down?bytes=%d
+	DownloadSize int           `json:"download_size"` // 测速时下载的文件大小，单位为 bit(使用默认cloudflare的话)，默认下载10M
+	Timeout      time.Duration `json:"timeout"`       // 每个代理测速的超时时间
+	ConfigPath   string        `json:"config_path"`   // 配置文件地址，可以为 URL 或者本地路径，多个使用 | 分隔
+	FilterRegex  string        `json:"filter_regex"`  // 通过名字过滤代理，只测试过滤部分，格式为正则，默认全部测
+	SortField    SortField     `json:"sort_field"`    // 排序方式，b 带宽 t 延迟
+	Concurrent   int           `json:"concurrent"`    // 下载并发数
+	TestGPT      bool          `json:"test_gpt"`      // 是否检测节点支持 GPT
+	URLForTest   []string      `json:"url_for_test"`  // 测试 URL 是否可访问
+	ProxyUrl     string        `json:"proxy_url"`     // ConfigPath 为网络链接时可使用指定代理下载
 }
 
 var (
@@ -202,7 +201,7 @@ func NewTest(options Options) (*Test, error) {
 }
 
 func (t *Test) TestSpeed() ([]Result, error) {
-	var allProxies, err = ReadProxies(t.options.ConfigPath, t.options.IgnoreProxyError, t.proxyUrl)
+	var allProxies, err = ReadProxies(t.options.ConfigPath, t.proxyUrl)
 	if err != nil {
 		return nil, err
 	}
@@ -354,63 +353,62 @@ func (t *Test) AliveProxiesToJson() ([]byte, error) {
 }
 
 // ReadProxies 从网络下载或者本地读取配置文件 configPathConfig 是配置地址，多个之间用 | 分割
-func ReadProxies(configPathConfig string, ignoreProxyError bool, proxyUrl *url.URL) (map[string]CProxy, error) {
-	var allProxies = make(map[string]CProxy)
+func ReadProxies(configPathConfig string, proxyUrl *url.URL) (map[string]CProxy, error) {
+	var (
+		allProxies = make(map[string]CProxy)
+		wg         = sync.WaitGroup{}
+		lock       = sync.Mutex{}
+	)
+
 	for _, configPath := range strings.Split(configPathConfig, "|") {
-		var body []byte
-		if strings.HasPrefix(configPath, "http") {
-			resp, err := Request(&RequestOption{
-				Method:       http.MethodGet,
-				URL:          configPath,
-				Headers:      map[string]string{"User-Agent": "clash-meta"},
-				Timeout:      5 * time.Second,
-				RetryTimes:   3,
-				RetryTimeOut: 3 * time.Second,
-				ProxyUrl:     proxyUrl,
-			})
-			if err != nil {
-				if ignoreProxyError {
+		wg.Add(1)
+		go func(configPath string) {
+			defer wg.Done()
+			var body []byte
+			if strings.HasPrefix(configPath, "http") {
+				resp, err := Request(&RequestOption{
+					Method:       http.MethodGet,
+					URL:          configPath,
+					Headers:      map[string]string{"User-Agent": "clash-meta"},
+					Timeout:      5 * time.Second,
+					RetryTimes:   3,
+					RetryTimeOut: 3 * time.Second,
+					ProxyUrl:     proxyUrl,
+				})
+				if err != nil {
 					log.Warnln("failed to fetch config: %s, err: %s", configPath, err)
-					continue
+					return
 				}
-				return nil, err
-			}
-			if resp.StatusCode != http.StatusOK {
-				if ignoreProxyError {
+				if resp.StatusCode != http.StatusOK {
 					log.Warnln("failed to fetch config: %s, status code: %d", configPath, resp.StatusCode)
-					continue
+					return
 				}
-				return nil, fmt.Errorf("failed to fetch config: %s, status code: %d", configPath, resp.StatusCode)
-			}
-			body = resp.Body
-		} else {
-			var err error
-			body, err = os.ReadFile(configPath)
-			if err != nil {
-				if ignoreProxyError {
-					log.Warnln("failed to read config: %s, err: %s", configPath, err)
-					continue
-				}
-				return nil, fmt.Errorf("failed to read config: %s, err: %s", configPath, err)
-			}
-		}
-
-		lps, err := loadProxies(body, ignoreProxyError, proxyUrl)
-		if err != nil {
-			if ignoreProxyError {
-				log.Warnln("failed to load proxies: %s, err: %s", configPath, err)
-				continue
+				body = resp.Body
 			} else {
-				return nil, fmt.Errorf("failed to load proxies: %s, err: %s", configPath, err)
+				var err error
+				body, err = os.ReadFile(configPath)
+				if err != nil {
+					log.Warnln("failed to read config: %s, err: %s", configPath, err)
+					return
+				}
 			}
-		}
 
-		for k, p := range lps {
-			if _, ok := allProxies[k]; !ok {
-				allProxies[k] = p
+			lps, err := loadProxies(body, proxyUrl)
+			if err != nil {
+				log.Warnln("failed to load proxies: %s, err: %s", configPath, err)
+				return
 			}
-		}
+
+			lock.Lock()
+			for k, p := range lps {
+				if _, ok := allProxies[k]; !ok {
+					allProxies[k] = p
+				}
+			}
+			lock.Unlock()
+		}(configPath)
 	}
+	wg.Wait()
 	return allProxies, nil
 }
 
@@ -504,7 +502,7 @@ func filterProxies(filter string, proxies map[string]CProxy) map[string]CProxy {
 	return filteredProxies
 }
 
-func loadProxies(buf []byte, ignoreProxyError bool, proxyUrl *url.URL) (map[string]CProxy, error) {
+func loadProxies(buf []byte, proxyUrl *url.URL) (map[string]CProxy, error) {
 	rawCfg := &RawConfig{
 		Proxies: []map[string]any{},
 	}
@@ -518,12 +516,8 @@ func loadProxies(buf []byte, ignoreProxyError bool, proxyUrl *url.URL) (map[stri
 	for i, config := range proxiesConfig {
 		proxy, err := adapter.ParseProxy(config)
 		if err != nil {
-			if ignoreProxyError {
-				log.Warnln("ParseProxy error: proxy %d: %s", i, err)
-				continue
-			} else {
-				return nil, fmt.Errorf("proxy %d: %w", i, err)
-			}
+			log.Warnln("ParseProxy error: proxy %d: %s", i, err)
+			continue
 		}
 
 		var name = proxy.Name()
@@ -534,30 +528,34 @@ func loadProxies(buf []byte, ignoreProxyError bool, proxyUrl *url.URL) (map[stri
 		}
 		proxies[name] = CProxy{Proxy: proxy, SecretConfig: config}
 	}
-	for name, config := range providersConfig {
-		if name == provider.ReservedName {
-			if ignoreProxyError {
-				log.Warnln("can not defined a provider called `%s`", provider.ReservedName)
-				continue
-			} else {
-				return nil, fmt.Errorf("can not defined a provider called `%s`", provider.ReservedName)
-			}
-		}
-		proxiesFromProvider, err := ReadProxies(config.Url, ignoreProxyError, proxyUrl)
-		if err != nil {
-			if ignoreProxyError {
-				log.Warnln("read provider proxies error. url:%s err: %v", config.Url, err)
-				continue
-			} else {
-				return nil, fmt.Errorf("read provider proxies error. url:%s err: %v", config.Url, err)
-			}
-		}
 
-		for proxyName, proxy := range proxiesFromProvider {
-			// 这里没有处理重名问题
-			proxies[fmt.Sprintf("[%s] %s", name, proxyName)] = proxy
-		}
+	var (
+		wg   = sync.WaitGroup{}
+		lock = sync.Mutex{}
+	)
+	for name, config := range providersConfig {
+		wg.Add(1)
+		go func(name string, config ProxyProvider) {
+			defer wg.Done()
+			if name == provider.ReservedName {
+				log.Warnln("can not defined a provider called `%s`", provider.ReservedName)
+				return
+			}
+			proxiesFromProvider, err := ReadProxies(config.Url, proxyUrl)
+			if err != nil {
+				log.Warnln("read provider proxies error. url:%s err: %v", config.Url, err)
+				return
+			}
+
+			lock.Lock()
+			for proxyName, proxy := range proxiesFromProvider {
+				// 这里没有处理重名问题
+				proxies[fmt.Sprintf("[%s] %s", name, proxyName)] = proxy
+			}
+			lock.Unlock()
+		}(name, config)
 	}
+	wg.Wait()
 	return proxies, nil
 }
 
