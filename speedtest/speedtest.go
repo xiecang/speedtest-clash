@@ -137,9 +137,21 @@ func init() {
 	}()
 }
 
+// https://wiki.metacubex.one/en/config/proxy-providers/
+// proxy-providers:
+//  provider1:
+//    type: http
+//    url: "http://test.com"
+//    path: ./proxy_providers/provider1.yaml
+
+type ProxyProvider struct {
+	Url string `json:"url"`
+	// 支持自定义 header，后续再加吧
+}
+
 type RawConfig struct {
-	Providers map[string]map[string]any `yaml:"proxy-providers"`
-	Proxies   []map[string]any          `yaml:"proxies"`
+	Providers map[string]ProxyProvider `yaml:"proxy-providers"`
+	Proxies   []map[string]any         `yaml:"proxies"`
 }
 
 type Test struct {
@@ -383,7 +395,7 @@ func ReadProxies(configPathConfig string, ignoreProxyError bool, proxyUrl *url.U
 			}
 		}
 
-		lps, err := loadProxies(body, ignoreProxyError)
+		lps, err := loadProxies(body, ignoreProxyError, proxyUrl)
 		if err != nil {
 			if ignoreProxyError {
 				log.Warnln("failed to load proxies: %s, err: %s", configPath, err)
@@ -492,7 +504,7 @@ func filterProxies(filter string, proxies map[string]CProxy) map[string]CProxy {
 	return filteredProxies
 }
 
-func loadProxies(buf []byte, ignoreProxyError bool) (map[string]CProxy, error) {
+func loadProxies(buf []byte, ignoreProxyError bool, proxyUrl *url.URL) (map[string]CProxy, error) {
 	rawCfg := &RawConfig{
 		Proxies: []map[string]any{},
 	}
@@ -514,15 +526,13 @@ func loadProxies(buf []byte, ignoreProxyError bool) (map[string]CProxy, error) {
 			}
 		}
 
+		var name = proxy.Name()
 		if _, exist := proxies[proxy.Name()]; exist {
-			if ignoreProxyError {
-				log.Warnln("proxy %s is the duplicate name, use first one", proxy.Name())
-				continue
-			} else {
-				return nil, fmt.Errorf("proxy %s is the duplicate name", proxy.Name())
-			}
+			// 粗暴重命名, 先不判断配置是否一致了，这里可以全测，结果交给外部程序去处理吧
+			name += "_1"
+			log.Warnln("names %s is already taken, use the name %s instead.", proxy.Name(), name)
 		}
-		proxies[proxy.Name()] = CProxy{Proxy: proxy, SecretConfig: config}
+		proxies[name] = CProxy{Proxy: proxy, SecretConfig: config}
 	}
 	for name, config := range providersConfig {
 		if name == provider.ReservedName {
@@ -533,31 +543,19 @@ func loadProxies(buf []byte, ignoreProxyError bool) (map[string]CProxy, error) {
 				return nil, fmt.Errorf("can not defined a provider called `%s`", provider.ReservedName)
 			}
 		}
-		pd, err := provider.ParseProxyProvider(name, config)
+		proxiesFromProvider, err := ReadProxies(config.Url, ignoreProxyError, proxyUrl)
 		if err != nil {
 			if ignoreProxyError {
-				log.Warnln("parse proxy provider %s error: %s", name, err)
+				log.Warnln("read provider proxies error. url:%s err: %v", config.Url, err)
 				continue
 			} else {
-				return nil, fmt.Errorf("parse proxy provider %s error: %w", name, err)
+				return nil, fmt.Errorf("read provider proxies error. url:%s err: %v", config.Url, err)
 			}
 		}
-		if err := pd.Initial(); err != nil {
-			if ignoreProxyError {
-				log.Warnln("initial proxy provider %s error: %s", pd.Name(), err)
-				continue
-			} else {
-				return nil, fmt.Errorf("initial proxy provider %s error: %w", pd.Name(), err)
-			}
-		}
-		for _, proxy := range pd.Proxies() {
-			var c = make(map[string]any)
-			d, _ := proxy.MarshalJSON()
-			_ = json.Unmarshal(d, &c)
-			proxies[fmt.Sprintf("[%s] %s", name, proxy.Name())] = CProxy{
-				Proxy:        proxy,
-				SecretConfig: c,
-			}
+
+		for proxyName, proxy := range proxiesFromProvider {
+			// 这里没有处理重名问题
+			proxies[fmt.Sprintf("[%s] %s", name, proxyName)] = proxy
 		}
 	}
 	return proxies, nil

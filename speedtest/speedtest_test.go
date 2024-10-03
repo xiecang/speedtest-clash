@@ -3,6 +3,7 @@ package speedtest
 import (
 	"encoding/json"
 	"github.com/metacubex/mihomo/adapter"
+	"net/url"
 	"reflect"
 	"testing"
 	"time"
@@ -79,7 +80,7 @@ func Test_TestSpeed(t *testing.T) {
 				t.Errorf("Invalid proxy: %v", err)
 				return
 			}
-			lps, err := loadProxies(bytes, tt.args.options.IgnoreProxyError)
+			lps, err := loadProxies(bytes, tt.args.options.IgnoreProxyError, nil)
 			if err != nil {
 				t.Errorf("Invalid proxy: %v", err)
 				return
@@ -133,6 +134,46 @@ func Test_testChatGPTAccessWeb(t *testing.T) {
 			}
 			if got := TestChatGPTAccess(proxy, tt.args.timeout); got != tt.want {
 				t.Errorf("testChatGPTAccessWeb() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestReadProxies(t *testing.T) {
+	type args struct {
+		configPathConfig string
+		ignoreProxyError bool
+		proxyUrl         string
+	}
+	tests := []struct {
+		name    string
+		args    args
+		want    map[string]CProxy
+		wantErr bool
+	}{
+		{
+			name: "test provider",
+			args: args{
+				configPathConfig: "test.yaml",
+				ignoreProxyError: true,
+				proxyUrl:         "http://127.0.0.1:7890",
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			proxyUrl, err := url.Parse(tt.args.proxyUrl)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("ReadProxies() Parse proxyUrl error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			got, err := ReadProxies(tt.args.configPathConfig, tt.args.ignoreProxyError, proxyUrl)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("ReadProxies() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("ReadProxies() got = %v, want %v", got, tt.want)
 			}
 		})
 	}
