@@ -36,26 +36,18 @@ func requestChatGPT(url string, proxy C.Proxy, timeout time.Duration) (*response
 	return &data, err
 }
 
-func testChatGPTAccessWeb(proxy C.Proxy, timeout time.Duration) bool {
-	// 1. 访问 https://chat.openai.com/ 如果无响应就不可用
-	// 2. 访问 https://chat.openai.com/cdn-cgi/trace 获取 loc= 国家码，查看是否支持
+func testChatGPTAccessWeb(proxy C.Proxy, timeout time.Duration) (bool, string) {
+	// 1. 访问 https://chat.openai.com/cdn-cgi/trace 获取 loc= 国家码，查看是否支持
+	// 2. 访问 https://chat.openai.com/ 如果无响应就不可用
 	client := getClient(proxy, timeout)
-	resp, err := client.Get(GPTTestURLWeb)
+	//
+	resp, err := client.Get(GPTTrace)
 	if err != nil {
-		return false
+		return false, ""
 	}
 	body, err := io.ReadAll(resp.Body)
 	if err != nil || len(body) == 0 {
-		return false
-	}
-	//
-	resp, err = client.Get(GPTTrace)
-	if err != nil {
-		return false
-	}
-	body, err = io.ReadAll(resp.Body)
-	if err != nil || len(body) == 0 {
-		return false
+		return false, ""
 	}
 	lines := strings.Split(string(body), "\n")
 	var loc string
@@ -64,13 +56,25 @@ func testChatGPTAccessWeb(proxy C.Proxy, timeout time.Duration) bool {
 			continue
 		}
 		loc = strings.Replace(line, "loc=", "", 1)
+		loc = strings.ToUpper(loc)
+		break
 	}
 	for _, c := range gptSupportCountry {
 		if strings.Compare(loc, c) == 0 {
-			return true
+			return true, loc
 		}
 	}
-	return false
+	//
+	resp, err = client.Get(GPTTestURLWeb)
+	if err != nil {
+		return false, loc
+	}
+	body, err = io.ReadAll(resp.Body)
+	if err != nil || len(body) == 0 {
+		return false, loc
+	}
+
+	return false, loc
 }
 
 func TestChatGPTAccess(proxy C.Proxy, timeout time.Duration) GPTResult {
@@ -78,6 +82,7 @@ func TestChatGPTAccess(proxy C.Proxy, timeout time.Duration) GPTResult {
 		Android atomic.Bool
 		IOS     atomic.Bool
 		Web     atomic.Bool
+		Loc     atomic.Value
 	}
 
 	var res = gptResultSync{}
@@ -86,6 +91,11 @@ func TestChatGPTAccess(proxy C.Proxy, timeout time.Duration) GPTResult {
 
 	wg.Add(3)
 
+	// ● 若不可用会提示
+	// {"cf_details":"Something went wrong. You may be connected to a disallowed ISP. If you are using VPN, try disabling it. Otherwise try a different Wi-Fi network or data connection."}
+	//
+	// ● 可用提示
+	// {"cf_details":"Request is not allowed. Please try again later.", "type":"dc"}
 	go func() {
 		defer wg.Done()
 
@@ -108,21 +118,18 @@ func TestChatGPTAccess(proxy C.Proxy, timeout time.Duration) GPTResult {
 
 	go func() {
 		defer wg.Done()
-		if ok := testChatGPTAccessWeb(proxy, timeout); ok {
-			res.Web.Store(true)
-		}
+		ok, loc := testChatGPTAccessWeb(proxy, timeout)
+		res.Web.Store(ok)
+		res.Loc.Store(loc)
 	}()
 
 	wg.Wait()
-	// ● 若不可用会提示
-	// {"cf_details":"Something went wrong. You may be connected to a disallowed ISP. If you are using VPN, try disabling it. Otherwise try a different Wi-Fi network or data connection."}
-	//
-	// ● 可用提示
-	// {"cf_details":"Request is not allowed. Please try again later.", "type":"dc"}
+
 	var r = GPTResult{
 		Android: res.Android.Load(),
 		IOS:     res.IOS.Load(),
 		Web:     res.Web.Load(),
+		Loc:     res.Loc.Load().(string),
 	}
 	if !r.Web {
 		r.Android = r.Web

@@ -52,9 +52,10 @@ type CProxy struct {
 }
 
 type GPTResult struct {
-	Android bool `json:"android"`
-	IOS     bool `json:"ios"`
-	Web     bool `json:"web"`
+	Android bool   `json:"android"`
+	IOS     bool   `json:"ios"`
+	Web     bool   `json:"web"`
+	Loc     string `json:"loc"`
 }
 
 type Result struct {
