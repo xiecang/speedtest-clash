@@ -1,3 +1,5 @@
+version: 2
+
 before:
   hooks:
     - go mod tidy
@@ -14,7 +16,7 @@ builds:
 
 archives:
   - format: tar.gz
-    name_template: >-
+    version_template: >-
       {{ .ProjectName }}_
       {{- title .Os }}_
       {{- if eq .Arch "amd64" }}x86_64
