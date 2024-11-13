@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	C "github.com/metacubex/mihomo/constant"
 	"github.com/metacubex/mihomo/log"
 	"net/url"
 	"regexp"
