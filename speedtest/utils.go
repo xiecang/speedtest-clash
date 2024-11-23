@@ -184,12 +184,57 @@ func TestSpeed(proxies map[string]CProxy, options *Options) ([]Result, error) {
 	return results, err
 }
 
-func TestProxyConcurrent(name string, proxy C.Proxy, option *Options) *Result {
+type proxyTest struct {
+	name   string
+	option *Options
+	proxy  C.Proxy
+	//
+	client *http.Client
+}
+
+func newProxyTest(name string, proxy C.Proxy, option *Options) *proxyTest {
+	client := getClient(proxy, option.Timeout)
+	return &proxyTest{
+		name:   name,
+		option: option,
+		proxy:  proxy,
+		client: client,
+	}
+}
+
+func (s *proxyTest) test(downloadSize int) (time.Duration, int64, bool) {
 	var (
+		client         = s.client
+		livenessObject = s.option.LivenessAddr
+	)
+	start := time.Now()
+	resp, err := client.Get(fmt.Sprintf(livenessObject, downloadSize))
+	if err != nil {
+		//log.Debugln("failed to test proxy: %s", err)
+		return 0, 0, false
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode-http.StatusOK > 100 {
+		return 0, 0, false
+	}
+	ttfb := time.Since(start)
+
+	written, _ := io.Copy(io.Discard, resp.Body)
+	if written == 0 {
+		return 0, 0, false
+	}
+	//downloadTime := time.Since(start) - ttfb
+	//bandwidth := float64(written) / downloadTime.Seconds()
+
+	return ttfb, written, true
+}
+
+func (s *proxyTest) concurrentTest() *Result {
+	var (
+		name            = s.name
+		option          = s.option
 		downloadSize    = option.DownloadSize
-		timeout         = option.Timeout
 		concurrentCount = option.Concurrent
-		livenessObject  = option.LivenessAddr
 	)
 	if concurrentCount <= 0 {
 		concurrentCount = 1
@@ -205,7 +250,7 @@ func TestProxyConcurrent(name string, proxy C.Proxy, option *Options) *Result {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			ttfb, w, ok := TestProxy(proxy, chunkSize, timeout, livenessObject)
+			ttfb, w, ok := s.test(chunkSize)
 			if ok {
 				atomic.AddInt64(&downloaded, w)
 				atomic.AddInt64(&totalTTFB, int64(ttfb))
@@ -222,6 +267,11 @@ func TestProxyConcurrent(name string, proxy C.Proxy, option *Options) *Result {
 	}
 
 	return result
+}
+
+func TestProxyConcurrent(name string, proxy C.Proxy, option *Options) *Result {
+	p := newProxyTest(name, proxy, option)
+	return p.concurrentTest()
 }
 
 func getClient(proxy C.Proxy, timeout time.Duration) *http.Client {
@@ -245,32 +295,6 @@ func getClient(proxy C.Proxy, timeout time.Duration) *http.Client {
 		},
 	}
 	return &client
-}
-
-func TestProxy(proxy C.Proxy, downloadSize int, timeout time.Duration, livenessObject string) (time.Duration, int64, bool) {
-	client := getClient(proxy, timeout)
-	start := time.Now()
-	resp, err := client.Get(fmt.Sprintf(livenessObject, downloadSize))
-	if err != nil {
-		//log.Debugln("failed to test proxy: %s", err)
-		return 0, 0, false
-	}
-	defer func(Body io.ReadCloser) {
-		_ = Body.Close()
-	}(resp.Body)
-	if resp.StatusCode-http.StatusOK > 100 {
-		return 0, 0, false
-	}
-	ttfb := time.Since(start)
-
-	written, _ := io.Copy(io.Discard, resp.Body)
-	if written == 0 {
-		return 0, 0, false
-	}
-	//downloadTime := time.Since(start) - ttfb
-	//bandwidth := float64(written) / downloadTime.Seconds()
-
-	return ttfb, written, true
 }
 
 func writeNodeConfigurationToYAML(filePath string, results []Result, proxies map[string]CProxy) error {

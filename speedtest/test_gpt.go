@@ -15,8 +15,24 @@ type response struct {
 	CFDetails string `json:"cf_details"`
 }
 
-func requestChatGPT(url string, proxy C.Proxy, timeout time.Duration) (*response, error) {
+type gptTest struct {
+	proxy   C.Proxy
+	timeout time.Duration
+	//
+	client *http.Client
+}
+
+func newGPTTest(proxy C.Proxy, timeout time.Duration) *gptTest {
 	client := getClient(proxy, timeout)
+	return &gptTest{
+		proxy:   proxy,
+		timeout: timeout,
+		client:  client,
+	}
+}
+
+func (g *gptTest) requestChatGPT(url string) (*response, error) {
+	client := g.client
 	resp, err := client.Post(url, "application/json", nil)
 	if err != nil {
 		return nil, err
@@ -36,15 +52,16 @@ func requestChatGPT(url string, proxy C.Proxy, timeout time.Duration) (*response
 	return &data, err
 }
 
-func testChatGPTAccessWeb(proxy C.Proxy, timeout time.Duration) (bool, string) {
+func (g *gptTest) testWeb() (bool, string) {
 	// 1. 访问 https://chat.openai.com/cdn-cgi/trace 获取 loc= 国家码，查看是否支持
 	// 2. 访问 https://chat.openai.com/ 如果无响应就不可用
-	client := getClient(proxy, timeout)
+	client := g.client
 	//
 	resp, err := client.Get(GPTTrace)
 	if err != nil {
 		return false, ""
 	}
+	defer resp.Body.Close()
 	body, err := io.ReadAll(resp.Body)
 	if err != nil || len(body) == 0 {
 		return false, ""
@@ -69,6 +86,7 @@ func testChatGPTAccessWeb(proxy C.Proxy, timeout time.Duration) (bool, string) {
 	if err != nil {
 		return false, loc
 	}
+	defer resp.Body.Close()
 	body, err = io.ReadAll(resp.Body)
 	if err != nil || len(body) == 0 {
 		return false, loc
@@ -77,7 +95,7 @@ func testChatGPTAccessWeb(proxy C.Proxy, timeout time.Duration) (bool, string) {
 	return false, loc
 }
 
-func TestChatGPTAccess(proxy C.Proxy, timeout time.Duration) GPTResult {
+func (g *gptTest) Test() GPTResult {
 	type gptResultSync struct {
 		Android atomic.Bool
 		IOS     atomic.Bool
@@ -98,8 +116,7 @@ func TestChatGPTAccess(proxy C.Proxy, timeout time.Duration) GPTResult {
 	// {"cf_details":"Request is not allowed. Please try again later.", "type":"dc"}
 	go func() {
 		defer wg.Done()
-
-		if resp, err := requestChatGPT(GPTTestURLAndroid, proxy, timeout); err == nil {
+		if resp, err := g.requestChatGPT(GPTTestURLAndroid); err == nil {
 			if !strings.Contains(resp.CFDetails, errMsg) {
 				res.Android.Store(true)
 			}
@@ -108,7 +125,7 @@ func TestChatGPTAccess(proxy C.Proxy, timeout time.Duration) GPTResult {
 
 	go func() {
 		defer wg.Done()
-		if resp, err := requestChatGPT(GPTTestURLIOS, proxy, timeout); err == nil {
+		if resp, err := g.requestChatGPT(GPTTestURLIOS); err == nil {
 			if !strings.Contains(resp.CFDetails, errMsg) {
 				res.IOS.Store(true)
 			}
@@ -118,7 +135,7 @@ func TestChatGPTAccess(proxy C.Proxy, timeout time.Duration) GPTResult {
 
 	go func() {
 		defer wg.Done()
-		ok, loc := testChatGPTAccessWeb(proxy, timeout)
+		ok, loc := g.testWeb()
 		res.Web.Store(ok)
 		res.Loc.Store(loc)
 	}()
@@ -136,6 +153,11 @@ func TestChatGPTAccess(proxy C.Proxy, timeout time.Duration) GPTResult {
 		r.IOS = r.Web
 	}
 	return r
+}
+
+func TestChatGPTAccess(proxy C.Proxy, timeout time.Duration) GPTResult {
+	t := newGPTTest(proxy, timeout)
+	return t.Test()
 }
 
 func TestURLAvailable(urls []string, proxy C.Proxy, timeout time.Duration) map[string]bool {
