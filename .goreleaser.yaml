@@ -16,7 +16,8 @@ builds:
 
 archives:
   - format: tar.gz
-    version_template: >-
+    # this name template makes the OS and Arch compatible with the results of `uname`.
+    name_template: >-
       {{ .ProjectName }}_
       {{- title .Os }}_
       {{- if eq .Arch "amd64" }}x86_64
