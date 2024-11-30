@@ -2,9 +2,11 @@ package speedtest
 
 import (
 	"context"
+	"github.com/metacubex/mihomo/common/utils"
 	C "github.com/metacubex/mihomo/constant"
 	"gopkg.in/yaml.v3"
 	"net"
+	"net/netip"
 	"sync"
 
 	"encoding/csv"
@@ -20,6 +22,10 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+)
+
+var (
+	delayTestUrl = "https://cp.cloudflare.com/generate_204"
 )
 
 func loadProxies(buf []byte, proxyUrl *url.URL) (map[string]CProxy, error) {
@@ -202,7 +208,7 @@ func newProxyTest(name string, proxy C.Proxy, option *Options) *proxyTest {
 	}
 }
 
-func (s *proxyTest) test(downloadSize int) (time.Duration, int64, bool) {
+func (s *proxyTest) test(downloadSize int) (time.Duration, int64, error) {
 	var (
 		client         = s.client
 		livenessObject = s.option.LivenessAddr
@@ -210,23 +216,22 @@ func (s *proxyTest) test(downloadSize int) (time.Duration, int64, bool) {
 	start := time.Now()
 	resp, err := client.Get(fmt.Sprintf(livenessObject, downloadSize))
 	if err != nil {
-		//log.Debugln("failed to test proxy: %s", err)
-		return 0, 0, false
+		return 0, 0, fmt.Errorf("connect test domain failed, err: %v", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode-http.StatusOK > 100 {
-		return 0, 0, false
+		return 0, 0, fmt.Errorf("test domain status not ok, status_code=%d", resp.StatusCode)
 	}
 	ttfb := time.Since(start)
 
 	written, _ := io.Copy(io.Discard, resp.Body)
 	if written == 0 {
-		return 0, 0, false
+		return 0, 0, fmt.Errorf("test domain return empty body")
 	}
 	//downloadTime := time.Since(start) - ttfb
 	//bandwidth := float64(written) / downloadTime.Seconds()
 
-	return ttfb, written, true
+	return ttfb, written, nil
 }
 
 func (s *proxyTest) concurrentTest() *Result {
@@ -240,9 +245,13 @@ func (s *proxyTest) concurrentTest() *Result {
 		concurrentCount = 1
 	}
 
-	chunkSize := downloadSize / concurrentCount
-	totalTTFB := int64(0)
-	downloaded := int64(0)
+	var (
+		chunkSize  = downloadSize / concurrentCount
+		totalTTFB  = int64(0)
+		downloaded = int64(0)
+		count      = int64(0)
+		delay      uint16
+	)
 
 	var wg = sync.WaitGroup{}
 	start := time.Now()
@@ -250,20 +259,42 @@ func (s *proxyTest) concurrentTest() *Result {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			ttfb, w, ok := s.test(chunkSize)
-			if ok {
+			ttfb, w, err := s.test(chunkSize)
+			if err != nil {
+				log.Debugln("Test: %s failed, %v", s.name, err)
+			} else {
 				atomic.AddInt64(&downloaded, w)
 				atomic.AddInt64(&totalTTFB, int64(ttfb))
+				atomic.AddInt64(&count, 1)
 			}
 		}(i)
+
+		go func() {
+			//	200,204
+			expectedStatus, err := utils.NewUnsignedRanges[uint16]("200,204")
+			if err != nil {
+				return
+			}
+
+			if d, err := s.proxy.URLTest(context.Background(), delayTestUrl, expectedStatus); err == nil {
+				delay = d
+			}
+
+		}()
 	}
 	wg.Wait()
 	downloadTime := time.Since(start)
 
+	var t time.Duration
+	if count > 0 {
+		t = time.Duration(totalTTFB / count)
+	}
+
 	result := &Result{
 		Name:      name,
 		Bandwidth: float64(downloaded) / downloadTime.Seconds(),
-		TTFB:      time.Duration(totalTTFB / int64(concurrentCount)),
+		TTFB:      t,
+		Delay:     delay,
 	}
 
 	return result
@@ -283,14 +314,28 @@ func getClient(proxy C.Proxy, timeout time.Duration) *http.Client {
 				if err != nil {
 					return nil, err
 				}
+				// trim FQDN (#737)
+				host = strings.TrimRight(host, ".")
+
 				var u16Port uint16
 				if port, err := strconv.ParseUint(port, 10, 16); err == nil {
 					u16Port = uint16(port)
 				}
-				return proxy.DialContext(ctx, &C.Metadata{
+				//return proxy.DialContext(ctx, &C.Metadata{
+				//	Host:    host,
+				//	DstPort: u16Port,
+				//})
+				metadata := &C.Metadata{
+					NetWork: C.TCP,
 					Host:    host,
+					DstIP:   netip.Addr{},
 					DstPort: u16Port,
-				})
+				}
+				ip, err := netip.ParseAddr(host)
+				if err == nil {
+					metadata.DstIP = ip
+				}
+				return proxy.DialContext(ctx, metadata)
 			},
 		},
 	}

@@ -86,13 +86,16 @@ func (t *Test) TestSpeed() ([]Result, error) {
 	return t.results, nil
 }
 
-func (t *Test) LogResults() {
-	var results = t.results
-	var format = "%s%-42s\t%-12s\t%-12s\t%-12s\t%-12s\t%-12s\033[0m\n"
-	fmt.Printf(format, "", "节点", "带宽", "延迟", "GPT Android", "GPT IOS", "GPT WEB")
+func (t *Test) logResults(results []Result) {
+	var format = "%s%-42s\t%-12s\t%-12s\t%-12s\t%-12s\t%-12s\t%-12s\033[0m\n"
+	fmt.Printf(format, "", "节点", "带宽", "延迟", "GPT Android", "GPT IOS", "GPT WEB", "Delay")
 	for _, result := range results {
 		result.Printf(format)
 	}
+}
+
+func (t *Test) LogResults() {
+	t.logResults(t.results)
 }
 
 func (t *Test) LogNum() {
@@ -100,14 +103,13 @@ func (t *Test) LogNum() {
 }
 
 func (t *Test) LogAlive() {
-	var format = "%s%-42s\t%-12s\t%-12s\t%-12s\t%-12s\t%-12s\033[0m\n"
-	fmt.Printf(format, "", "节点", "带宽", "延迟", "GPT Android", "GPT IOS", "GPT WEB")
+	var rs []Result
 	for _, result := range t.results {
-		if !result.Alive() {
-			continue
+		if result.Alive() {
+			rs = append(rs, result)
 		}
-		result.Printf(format)
 	}
+	t.logResults(rs)
 }
 
 func (t *Test) WriteToYaml(names ...string) error {

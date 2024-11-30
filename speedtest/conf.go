@@ -62,12 +62,13 @@ type Result struct {
 	Name      string
 	Bandwidth float64
 	TTFB      time.Duration
+	Delay     uint16
 	GPTResult
 	URLForTest map[string]bool
 }
 
 func (r *Result) Alive() bool {
-	return r.Bandwidth > 0 && r.TTFB > 0
+	return (r.Delay > 0) || (r.Bandwidth > 0 && r.TTFB > 0)
 }
 
 func formatName(name string) string {
@@ -121,7 +122,9 @@ func (r *Result) Printf(format string) {
 		color = green
 	}
 	fmt.Printf(format, color, formatName(r.Name), formatBandwidth(r.Bandwidth), formatMilliseconds(r.TTFB),
-		formatGPT(r.GPTResult.Android), formatGPT(r.GPTResult.IOS), formatGPT(r.GPTResult.Web))
+		formatGPT(r.GPTResult.Android), formatGPT(r.GPTResult.IOS), formatGPT(r.GPTResult.Web),
+		fmt.Sprintf("%d", r.Delay),
+	)
 }
 
 // https://wiki.metacubex.one/en/config/proxy-providers/
