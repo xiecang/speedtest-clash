@@ -49,8 +49,9 @@ func clearResultCache() {
 
 func init() {
 	go func() {
-		for {
-			time.Sleep(cacheTimeout)
+		t := time.NewTicker(cacheTimeout)
+		select {
+		case <-t.C:
 			clearResultCache()
 		}
 	}()
