@@ -6,7 +6,6 @@ import (
 	C "github.com/metacubex/mihomo/constant"
 	"gopkg.in/yaml.v3"
 	"net"
-	"net/netip"
 	"sync"
 
 	"encoding/csv"
@@ -321,21 +320,10 @@ func getClient(proxy C.Proxy, timeout time.Duration) *http.Client {
 				if port, err := strconv.ParseUint(port, 10, 16); err == nil {
 					u16Port = uint16(port)
 				}
-				//return proxy.DialContext(ctx, &C.Metadata{
-				//	Host:    host,
-				//	DstPort: u16Port,
-				//})
-				metadata := &C.Metadata{
-					NetWork: C.TCP,
+				return proxy.DialContext(ctx, &C.Metadata{
 					Host:    host,
-					DstIP:   netip.Addr{},
 					DstPort: u16Port,
-				}
-				ip, err := netip.ParseAddr(host)
-				if err == nil {
-					metadata.DstIP = ip
-				}
-				return proxy.DialContext(ctx, metadata)
+				})
 			},
 		},
 	}
