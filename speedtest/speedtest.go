@@ -69,7 +69,11 @@ func (t *Test) filterProxies(proxies map[string]CProxy) map[string]CProxy {
 		if regexpNonContain != nil && regexpNonContain.MatchString(name) {
 			continue
 		}
-		if regexpContain != nil && regexpContain.MatchString(name) {
+		if regexpContain != nil {
+			if regexpContain.MatchString(name) {
+				filteredProxies[name] = proxy
+			}
+		} else {
 			filteredProxies[name] = proxy
 		}
 	}
