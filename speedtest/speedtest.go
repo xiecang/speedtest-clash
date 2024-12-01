@@ -47,14 +47,29 @@ func sortResult(results []Result, sortField SortField) ([]Result, error) {
 }
 
 // filterProxies 过滤出指定的代理 filter 是过滤的正则表达式，proxies 是代理
-func filterProxies(filter string, proxies map[string]CProxy) map[string]CProxy {
-	if filter == "" {
+func (t *Test) filterProxies(proxies map[string]CProxy) map[string]CProxy {
+	var (
+		regexpContain    *regexp.Regexp
+		regexpNonContain *regexp.Regexp
+		regexContain     = t.options.NameRegexContain
+		regexNonContain  = t.options.NameRegexNonContain
+	)
+	if regexContain != "" {
+		regexpContain = regexp.MustCompile(regexContain)
+	}
+	if regexNonContain != "" {
+		regexpNonContain = regexp.MustCompile(regexNonContain)
+	}
+	if regexpContain == nil && regexpNonContain == nil {
 		return proxies
 	}
-	filterRegexp := regexp.MustCompile(filter)
+
 	filteredProxies := make(map[string]CProxy)
 	for name, proxy := range proxies {
-		if filterRegexp.MatchString(name) {
+		if regexpNonContain != nil && regexpNonContain.MatchString(name) {
+			continue
+		}
+		if regexpContain != nil && regexpContain.MatchString(name) {
 			filteredProxies[name] = proxy
 		}
 	}
@@ -70,7 +85,7 @@ func (t *Test) TestSpeed() ([]Result, error) {
 		return nil, fmt.Errorf("no proxies found")
 	}
 	t.proxies = allProxies
-	var filteredProxies = filterProxies(t.options.FilterRegex, allProxies)
+	var filteredProxies = t.filterProxies(allProxies)
 
 	result, err := TestSpeed(filteredProxies, t.options)
 	if err != nil {

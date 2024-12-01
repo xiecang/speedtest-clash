@@ -27,13 +27,13 @@ func main() {
 	}
 
 	var options = speedtest.Options{
-		LivenessAddr: *livenessObject,
-		DownloadSize: *downloadSizeConfig,
-		Timeout:      *timeoutConfig,
-		ConfigPath:   *configPathConfig,
-		FilterRegex:  *filterRegexConfig,
-		SortField:    speedtest.SortField(*sortField),
-		Concurrent:   *concurrent,
+		LivenessAddr:     *livenessObject,
+		DownloadSize:     *downloadSizeConfig,
+		Timeout:          *timeoutConfig,
+		ConfigPath:       *configPathConfig,
+		NameRegexContain: *filterRegexConfig,
+		SortField:        speedtest.SortField(*sortField),
+		Concurrent:       *concurrent,
 	}
 
 	var t, err = speedtest.NewTest(options)

@@ -34,16 +34,17 @@ var (
 )
 
 type Options struct {
-	LivenessAddr string        `json:"liveness_addr"` // 测速时调用的地址，格式如 https://speed.cloudflare.com/__down?bytes=%d
-	DownloadSize int           `json:"download_size"` // 测速时下载的文件大小，单位为 bit(使用默认cloudflare的话)，默认下载10M
-	Timeout      time.Duration `json:"timeout"`       // 每个代理测速的超时时间
-	ConfigPath   string        `json:"config_path"`   // 配置文件地址，可以为 URL 或者本地路径，多个使用 | 分隔
-	FilterRegex  string        `json:"filter_regex"`  // 通过名字过滤代理，只测试过滤部分，格式为正则，默认全部测
-	SortField    SortField     `json:"sort_field"`    // 排序方式，b 带宽 t 延迟
-	Concurrent   int           `json:"concurrent"`    // 测速时候的下载并发数
-	TestGPT      bool          `json:"test_gpt"`      // 是否检测节点支持 GPT
-	URLForTest   []string      `json:"url_for_test"`  // 测试 URL 是否可访问
-	ProxyUrl     string        `json:"proxy_url"`     // ConfigPath 为网络链接时可使用指定代理下载
+	LivenessAddr        string        `json:"liveness_addr"`          // 测速时调用的地址，格式如 https://speed.cloudflare.com/__down?bytes=%d
+	DownloadSize        int           `json:"download_size"`          // 测速时下载的文件大小，单位为 bit(使用默认cloudflare的话)，默认下载10M
+	Timeout             time.Duration `json:"timeout"`                // 每个代理测速的超时时间
+	ConfigPath          string        `json:"config_path"`            // 配置文件地址，可以为 URL 或者本地路径，多个使用 | 分隔
+	NameRegexContain    string        `json:"name_regex_contain"`     // 通过名字过滤代理，只测试过滤部分，格式为正则，默认全部测
+	NameRegexNonContain string        `json:"name_regex_not_contain"` // 通过名字过滤代理，跳过过滤部分，格式为正则
+	SortField           SortField     `json:"sort_field"`             // 排序方式，b 带宽 t 延迟
+	Concurrent          int           `json:"concurrent"`             // 测速时候的下载并发数
+	TestGPT             bool          `json:"test_gpt"`               // 是否检测节点支持 GPT
+	URLForTest          []string      `json:"url_for_test"`           // 测试 URL 是否可访问
+	ProxyUrl            string        `json:"proxy_url"`              // ConfigPath 为网络链接时可使用指定代理下载
 }
 
 type CProxy struct {
