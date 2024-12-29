@@ -102,9 +102,7 @@ func request(option *RequestOption) (*XcResponse, error) {
 		}
 		return nil, fmt.Errorf("client.Do error: %w", err)
 	}
-	defer func(Body io.ReadCloser) {
-		_ = Body.Close()
-	}(resp.Body)
+	defer resp.Body.Close()
 	var body []byte
 	body, err = io.ReadAll(resp.Body)
 	return &XcResponse{
