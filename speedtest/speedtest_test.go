@@ -2,7 +2,7 @@ package speedtest
 
 import (
 	"encoding/json"
-	"github.com/metacubex/mihomo/adapter"
+	"github.com/xiecang/speedtest-clash/speedtest/models"
 	"net/url"
 	"reflect"
 	"testing"
@@ -12,7 +12,7 @@ import (
 func Test_TestSpeed(t *testing.T) {
 	type args struct {
 		proxy   map[string]interface{}
-		options *Options
+		options *models.Options
 	}
 	tests := []struct {
 		name    string
@@ -36,11 +36,11 @@ func Test_TestSpeed(t *testing.T) {
 					"type":           "ssr",
 					"udp":            true,
 				},
-				options: &Options{
+				options: &models.Options{
 					DownloadSize: 10 * 1024 * 1024,
 					Timeout:      5 * time.Second,
-					SortField:    SortFieldBandwidth,
-					LivenessAddr: DefaultLivenessAddr,
+					SortField:    models.SortFieldBandwidth,
+					LivenessAddr: models.DefaultLivenessAddr,
 				},
 			},
 			want: []Result{
@@ -59,9 +59,14 @@ func Test_TestSpeed(t *testing.T) {
 				options: &Options{
 					DownloadSize: 10 * 1024 * 1024,
 					Timeout:      5 * time.Second,
-					SortField:    SortFieldBandwidth,
-					LivenessAddr: DefaultLivenessAddr,
+					SortField:    models.SortFieldBandwidth,
+					LivenessAddr: models.DefaultLivenessAddr,
 					URLForTest:   []string{"https://www.google.com"},
+					CheckTypes: []models.CheckType{
+						models.CheckTypeGPTIOS,
+						models.CheckTypeGPTWeb,
+						models.CheckTypeGPTAndroid,
+					},
 				},
 			},
 			want: []Result{
@@ -97,48 +102,6 @@ func Test_TestSpeed(t *testing.T) {
 	}
 }
 
-func Test_testChatGPTAccessWeb(t *testing.T) {
-	type args struct {
-		config  map[string]any
-		timeout time.Duration
-	}
-	tests := []struct {
-		name string
-		args args
-		want GPTResult
-	}{
-		{
-			name: "1",
-			args: args{
-				config: map[string]any{
-					"name":             "gpt",
-					"server":           "120.234.147.175",
-					"port":             41492,
-					"type":             "vmess",
-					"uuid":             "418048af-a293-4b99-9b0c-98ca3580dd24",
-					"alterId":          64,
-					"cipher":           "auto",
-					"tls":              false,
-					"skip-cert-verify": true,
-					"udp":              true,
-				},
-			},
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			proxy, err := adapter.ParseProxy(tt.args.config)
-			if err != nil {
-				t.Errorf("parse config failed: %v", err)
-				return
-			}
-			if got := TestChatGPTAccess(proxy, tt.args.timeout); got != tt.want {
-				t.Errorf("testChatGPTAccessWeb() = %v, want %v", got, tt.want)
-			}
-		})
-	}
-}
-
 func TestReadProxies(t *testing.T) {
 	type args struct {
 		configPathConfig string
@@ -147,7 +110,7 @@ func TestReadProxies(t *testing.T) {
 	tests := []struct {
 		name    string
 		args    args
-		want    map[string]CProxy
+		want    map[string]models.CProxy
 		wantErr bool
 	}{
 		{

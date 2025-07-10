@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/metacubex/mihomo/log"
+	"github.com/xiecang/speedtest-clash/speedtest/models"
 	"net/url"
 	"regexp"
 	"sort"
@@ -16,26 +17,26 @@ var (
 )
 
 type Test struct {
-	options      *Options
+	options      *models.Options
 	proxyUrl     *url.URL
-	proxies      map[string]CProxy
+	proxies      map[string]models.CProxy
 	results      []Result
-	aliveProxies []CProxy
+	aliveProxies []models.CProxy
 	_testedSpeed bool
 }
 
-func sortResult(results []Result, sortField SortField) ([]Result, error) {
+func sortResult(results []Result, sortField models.SortField) ([]Result, error) {
 	if sortField == "" {
 		return results, nil
 	}
 	var err error
 	switch sortField {
-	case SortFieldBandwidth, SortFieldBandwidth2:
+	case models.SortFieldBandwidth, models.SortFieldBandwidth2:
 		sort.Slice(results, func(i, j int) bool {
 			return results[i].Bandwidth > results[j].Bandwidth
 		})
 		fmt.Println("\n\n===结果按照带宽排序===")
-	case SortFieldTTFB, SortFieldTTFB2:
+	case models.SortFieldTTFB, models.SortFieldTTFB2:
 		sort.Slice(results, func(i, j int) bool {
 			return results[i].TTFB < results[j].TTFB
 		})
@@ -47,7 +48,7 @@ func sortResult(results []Result, sortField SortField) ([]Result, error) {
 }
 
 // filterProxies 过滤出指定的代理 filter 是过滤的正则表达式，proxies 是代理
-func (t *Test) filterProxies(proxies map[string]CProxy) map[string]CProxy {
+func (t *Test) filterProxies(proxies map[string]models.CProxy) map[string]models.CProxy {
 	var (
 		regexpContain    *regexp.Regexp
 		regexpNonContain *regexp.Regexp
@@ -64,7 +65,7 @@ func (t *Test) filterProxies(proxies map[string]CProxy) map[string]CProxy {
 		return proxies
 	}
 
-	filteredProxies := make(map[string]CProxy)
+	filteredProxies := make(map[string]models.CProxy)
 	for name, proxy := range proxies {
 		if regexpNonContain != nil && regexpNonContain.MatchString(name) {
 			continue
@@ -159,11 +160,11 @@ func (t *Test) WriteToCsv(names ...string) error {
 }
 
 // AliveProxies 可访问的节点
-func (t *Test) AliveProxies() ([]CProxy, error) {
+func (t *Test) AliveProxies() ([]models.CProxy, error) {
 	if !t._testedSpeed {
 		_, _ = t.TestSpeed()
 	}
-	var proxies []CProxy
+	var proxies []models.CProxy
 
 	for _, result := range t.results {
 		if !result.Alive() {
@@ -201,7 +202,7 @@ func (t *Test) AliveProxiesWithResult() ([]CProxyWithResult, error) {
 	return proxies, nil
 }
 
-func (t *Test) Proxies() map[string]CProxy {
+func (t *Test) Proxies() map[string]models.CProxy {
 	return t.proxies
 }
 
@@ -212,7 +213,7 @@ func (t *Test) AliveProxiesToJson() ([]byte, error) {
 	}
 	var (
 		ps      []map[string]any
-		proxies []CProxy
+		proxies []models.CProxy
 	)
 
 	for _, result := range t.results {
@@ -224,7 +225,7 @@ func (t *Test) AliveProxiesToJson() ([]byte, error) {
 		proxies = append(proxies, p)
 		// 把 GPT 测试信息放入
 		d := p.SecretConfig
-		d["_gpt"] = result.GPTResult
+		// fixme: add results
 		ps = append(ps, d)
 	}
 	t.aliveProxies = proxies
@@ -235,7 +236,7 @@ func (t *Test) AliveProxiesToJson() ([]byte, error) {
 	return data, nil
 }
 
-func checkOptions(options *Options) (bool, string) {
+func checkOptions(options *models.Options) (bool, string) {
 	if options.ConfigPath == "" {
 		return false, "配置不能为空"
 	}
@@ -246,16 +247,16 @@ func checkOptions(options *Options) (bool, string) {
 		options.Timeout = 5 * time.Second
 	}
 	if options.SortField == "" {
-		options.SortField = SortFieldBandwidth
+		options.SortField = models.SortFieldBandwidth
 	}
 	if options.LivenessAddr == "" {
-		options.LivenessAddr = DefaultLivenessAddr
+		options.LivenessAddr = models.DefaultLivenessAddr
 	}
 
 	return true, ""
 }
 
-func NewTest(options Options) (*Test, error) {
+func NewTest(options models.Options) (*Test, error) {
 	if ok, msg := checkOptions(&options); !ok {
 		return nil, fmt.Errorf("配置格式不正确: %s", msg)
 	}

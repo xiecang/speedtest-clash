@@ -4,8 +4,9 @@ import (
 	"context"
 	"github.com/metacubex/mihomo/common/utils"
 	C "github.com/metacubex/mihomo/constant"
+	"github.com/xiecang/speedtest-clash/speedtest/models"
+	"github.com/xiecang/speedtest-clash/speedtest/requests"
 	"gopkg.in/yaml.v3"
-	"net"
 	"sync"
 
 	"encoding/csv"
@@ -27,14 +28,14 @@ var (
 	delayTestUrl = "https://cp.cloudflare.com/generate_204"
 )
 
-func loadProxies(buf []byte, proxyUrl *url.URL) (map[string]CProxy, error) {
-	rawCfg := &RawConfig{
+func loadProxies(buf []byte, proxyUrl *url.URL) (map[string]models.CProxy, error) {
+	rawCfg := &models.RawConfig{
 		Proxies: []map[string]any{},
 	}
 	if err := yaml.Unmarshal(buf, rawCfg); err != nil {
 		return nil, err
 	}
-	proxies := make(map[string]CProxy)
+	proxies := make(map[string]models.CProxy)
 	proxiesConfig := rawCfg.Proxies
 	providersConfig := rawCfg.Providers
 
@@ -51,7 +52,7 @@ func loadProxies(buf []byte, proxyUrl *url.URL) (map[string]CProxy, error) {
 			name += "_1"
 			log.Warnln("names %s is already taken, use the name %s instead.", proxy.Name(), name)
 		}
-		proxies[name] = CProxy{Proxy: proxy, SecretConfig: config}
+		proxies[name] = models.CProxy{Proxy: proxy, SecretConfig: config}
 	}
 
 	var (
@@ -60,7 +61,7 @@ func loadProxies(buf []byte, proxyUrl *url.URL) (map[string]CProxy, error) {
 	)
 	for name, config := range providersConfig {
 		wg.Add(1)
-		go func(name string, config ProxyProvider) {
+		go func(name string, config models.ProxyProvider) {
 			defer wg.Done()
 			if name == provider.ReservedName {
 				log.Warnln("can not defined a provider called `%s`", provider.ReservedName)
@@ -85,9 +86,9 @@ func loadProxies(buf []byte, proxyUrl *url.URL) (map[string]CProxy, error) {
 }
 
 // ReadProxies 从网络下载或者本地读取配置文件 configPathConfig 是配置地址，多个之间用 | 分割
-func ReadProxies(configPathConfig string, proxyUrl *url.URL) (map[string]CProxy, error) {
+func ReadProxies(configPathConfig string, proxyUrl *url.URL) (map[string]models.CProxy, error) {
 	var (
-		allProxies = make(map[string]CProxy)
+		allProxies = make(map[string]models.CProxy)
 		wg         = sync.WaitGroup{}
 		lock       = sync.Mutex{}
 	)
@@ -98,7 +99,7 @@ func ReadProxies(configPathConfig string, proxyUrl *url.URL) (map[string]CProxy,
 			defer wg.Done()
 			var body []byte
 			if strings.HasPrefix(configPath, "http") {
-				resp, err := Request(&RequestOption{
+				resp, err := requests.Request(context.Background(), &requests.RequestOption{
 					Method:       http.MethodGet,
 					URL:          configPath,
 					Headers:      map[string]string{"User-Agent": "clash-meta"},
@@ -144,14 +145,48 @@ func ReadProxies(configPathConfig string, proxyUrl *url.URL) (map[string]CProxy,
 	return allProxies, nil
 }
 
-func TestSpeed(proxies map[string]CProxy, options *Options) ([]Result, error) {
+func TestURLAvailable(urls []string, proxy C.Proxy, timeout time.Duration) map[string]bool {
+	if len(urls) == 0 {
+		return nil
+	}
+	var res = sync.Map{}
+	wg := sync.WaitGroup{}
+	wg.Add(len(urls))
+
+	for _, url := range urls {
+
+		go func(url string) {
+			defer wg.Done()
+			client := requests.GetClient(proxy, timeout)
+			resp, err := client.Get(url)
+			if err != nil {
+				res.Store(url, false)
+				return
+			}
+			if resp.StatusCode-http.StatusOK > 200 {
+				res.Store(url, false)
+				return
+			}
+			res.Store(url, true)
+		}(url)
+	}
+	wg.Wait()
+	var result = make(map[string]bool)
+	res.Range(func(key, value interface{}) bool {
+		result[key.(string)] = value.(bool)
+		return true
+	})
+	return result
+}
+
+func TestSpeed(proxies map[string]models.CProxy, options *models.Options) ([]Result, error) {
 	results := make([]Result, 0, len(proxies))
 	var err error
 
 	var wg = sync.WaitGroup{}
 	for name, proxy := range proxies {
 		wg.Add(1)
-		go func(name string, proxy CProxy) {
+		go func(name string, proxy models.CProxy) {
 			defer wg.Done()
 
 			// get from cache
@@ -166,9 +201,7 @@ func TestSpeed(proxies map[string]CProxy, options *Options) ([]Result, error) {
 				result := TestProxyConcurrent(name, proxy, options)
 
 				if result.Alive() {
-					if options.TestGPT {
-						result.GPTResult = TestChatGPTAccess(proxy, options.Timeout)
-					}
+					result.CheckResults = checkProxy(context.Background(), proxy, options.CheckTypes)
 
 					if options.URLForTest != nil {
 						result.URLForTest = TestURLAvailable(options.URLForTest, proxy, options.Timeout)
@@ -191,14 +224,14 @@ func TestSpeed(proxies map[string]CProxy, options *Options) ([]Result, error) {
 
 type proxyTest struct {
 	name   string
-	option *Options
+	option *models.Options
 	proxy  C.Proxy
 	//
 	client *http.Client
 }
 
-func newProxyTest(name string, proxy C.Proxy, option *Options) *proxyTest {
-	client := getClient(proxy, option.Timeout)
+func newProxyTest(name string, proxy C.Proxy, option *models.Options) *proxyTest {
+	client := requests.GetClient(proxy, option.Timeout)
 	return &proxyTest{
 		name:   name,
 		option: option,
@@ -299,38 +332,12 @@ func (s *proxyTest) concurrentTest() *Result {
 	return result
 }
 
-func TestProxyConcurrent(name string, proxy C.Proxy, option *Options) *Result {
+func TestProxyConcurrent(name string, proxy C.Proxy, option *models.Options) *Result {
 	p := newProxyTest(name, proxy, option)
 	return p.concurrentTest()
 }
 
-func getClient(proxy C.Proxy, timeout time.Duration) *http.Client {
-	client := http.Client{
-		Timeout: timeout,
-		Transport: &http.Transport{
-			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-				host, port, err := net.SplitHostPort(addr)
-				if err != nil {
-					return nil, err
-				}
-				// trim FQDN (#737)
-				host = strings.TrimRight(host, ".")
-
-				var u16Port uint16
-				if port, err := strconv.ParseUint(port, 10, 16); err == nil {
-					u16Port = uint16(port)
-				}
-				return proxy.DialContext(ctx, &C.Metadata{
-					Host:    host,
-					DstPort: u16Port,
-				})
-			},
-		},
-	}
-	return &client
-}
-
-func writeNodeConfigurationToYAML(filePath string, results []Result, proxies map[string]CProxy) error {
+func writeNodeConfigurationToYAML(filePath string, results []Result, proxies map[string]models.CProxy) error {
 	fp, err := os.Create(filePath)
 	if err != nil {
 		return err

@@ -4,6 +4,7 @@ import (
 	"flag"
 	"github.com/phuslu/log"
 	"github.com/xiecang/speedtest-clash/speedtest"
+	"github.com/xiecang/speedtest-clash/speedtest/models"
 	"strings"
 	"time"
 )
@@ -26,13 +27,13 @@ func main() {
 		log.Fatal().Msgf("Please specify the configuration file")
 	}
 
-	var options = speedtest.Options{
+	var options = models.Options{
 		LivenessAddr:     *livenessObject,
 		DownloadSize:     *downloadSizeConfig,
 		Timeout:          *timeoutConfig,
 		ConfigPath:       *configPathConfig,
 		NameRegexContain: *filterRegexConfig,
-		SortField:        speedtest.SortField(*sortField),
+		SortField:        models.SortField(*sortField),
 		Concurrent:       *concurrent,
 	}
 

@@ -1,7 +1,8 @@
-package speedtest
+package requests
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"github.com/metacubex/mihomo/log"
@@ -26,6 +27,7 @@ type RequestOption struct {
 	Verbose bool
 	// 代理链接
 	ProxyUrl *url.URL
+	Client   *http.Client
 }
 
 type XcResponse struct {
@@ -54,7 +56,19 @@ func checkedOption(option *RequestOption) (*RequestOption, error) {
 	return option, nil
 }
 
-func request(option *RequestOption) (*XcResponse, error) {
+func checkCtx(ctx context.Context) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+		return nil
+	}
+}
+
+func request(ctx context.Context, option *RequestOption) (*XcResponse, error) {
+	if err := checkCtx(ctx); err != nil {
+		return nil, err
+	}
 	var (
 		req *http.Request
 		err error
@@ -79,9 +93,12 @@ func request(option *RequestOption) (*XcResponse, error) {
 		transport.Proxy = http.ProxyURL(option.ProxyUrl)
 	}
 
-	client := &http.Client{
-		Transport: transport,
-		Timeout:   option.Timeout,
+	client := option.Client
+	if client == nil {
+		client = &http.Client{
+			Transport: transport,
+			Timeout:   option.Timeout,
+		}
 	}
 
 	req, err = http.NewRequest(option.Method, option.URL, bytes.NewReader(option.Body))
@@ -103,6 +120,11 @@ func request(option *RequestOption) (*XcResponse, error) {
 		return nil, fmt.Errorf("client.Do error: %w", err)
 	}
 	defer resp.Body.Close()
+
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
 	var body []byte
 	body, err = io.ReadAll(resp.Body)
 	return &XcResponse{
@@ -110,18 +132,22 @@ func request(option *RequestOption) (*XcResponse, error) {
 		StatusCode: resp.StatusCode,
 	}, nil
 }
-func Request(option *RequestOption) (*XcResponse, error) {
-	resp, err := request(option)
+
+func Request(ctx context.Context, option *RequestOption) (*XcResponse, error) {
+	resp, err := request(ctx, option)
 	if option.RetryTimes > 0 && (err != nil || resp == nil) {
 		var timeout = option.RetryTimeOut
 		if timeout <= 0 {
 			timeout = 3 * time.Second
 		}
 		for i := 0; i < option.RetryTimes; i++ {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
 			time.Sleep(timeout)
 			var t = time.Second + timeout
 			timeout = t
-			resp, err = request(option)
+			resp, err = request(ctx, option)
 			if resp != nil {
 				break
 			}

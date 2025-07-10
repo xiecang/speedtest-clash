@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"github.com/metacubex/mihomo/log"
 	"github.com/xiecang/speedtest-clash/speedtest"
+	"github.com/xiecang/speedtest-clash/speedtest/models"
 	"io"
 	"net/http"
 	"strconv"
@@ -25,7 +26,7 @@ func filterAlive(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	var (
-		body speedtest.Options
+		body models.Options
 	)
 	bodyBytes, err := io.ReadAll(req.Body)
 	log.Infoln("receive bodyBytes: %v", string(bodyBytes))
