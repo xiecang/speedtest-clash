@@ -56,19 +56,7 @@ func checkedOption(option *RequestOption) (*RequestOption, error) {
 	return option, nil
 }
 
-func checkCtx(ctx context.Context) error {
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	default:
-		return nil
-	}
-}
-
 func request(ctx context.Context, option *RequestOption) (*XcResponse, error) {
-	if err := checkCtx(ctx); err != nil {
-		return nil, err
-	}
 	var (
 		req *http.Request
 		err error
@@ -101,7 +89,7 @@ func request(ctx context.Context, option *RequestOption) (*XcResponse, error) {
 		}
 	}
 
-	req, err = http.NewRequest(option.Method, option.URL, bytes.NewReader(option.Body))
+	req, err = http.NewRequestWithContext(ctx, option.Method, option.URL, bytes.NewReader(option.Body))
 	if err != nil {
 		if option.Verbose {
 			log.Errorln("http.NewRequest error: %v", err)

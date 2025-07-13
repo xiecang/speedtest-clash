@@ -179,8 +179,8 @@ func TestURLAvailable(urls []string, proxy C.Proxy, timeout time.Duration) map[s
 	return result
 }
 
-func TestSpeed(proxies map[string]models.CProxy, options *models.Options) ([]Result, error) {
-	results := make([]Result, 0, len(proxies))
+func TestSpeed(proxies map[string]models.CProxy, options *models.Options) ([]models.Result, error) {
+	results := make([]models.Result, 0, len(proxies))
 	var err error
 
 	var wg = sync.WaitGroup{}
@@ -266,7 +266,7 @@ func (s *proxyTest) test(downloadSize int) (time.Duration, int64, error) {
 	return ttfb, written, nil
 }
 
-func (s *proxyTest) concurrentTest() *Result {
+func (s *proxyTest) concurrentTest() *models.Result {
 	var (
 		name            = s.name
 		option          = s.option
@@ -322,7 +322,7 @@ func (s *proxyTest) concurrentTest() *Result {
 		t = time.Duration(totalTTFB / count)
 	}
 
-	result := &Result{
+	result := &models.Result{
 		Name:      name,
 		Bandwidth: float64(downloaded) / downloadTime.Seconds(),
 		TTFB:      t,
@@ -332,12 +332,12 @@ func (s *proxyTest) concurrentTest() *Result {
 	return result
 }
 
-func TestProxyConcurrent(name string, proxy C.Proxy, option *models.Options) *Result {
+func TestProxyConcurrent(name string, proxy C.Proxy, option *models.Options) *models.Result {
 	p := newProxyTest(name, proxy, option)
 	return p.concurrentTest()
 }
 
-func writeNodeConfigurationToYAML(filePath string, results []Result, proxies map[string]models.CProxy) error {
+func writeNodeConfigurationToYAML(filePath string, results []models.Result, proxies map[string]models.CProxy) error {
 	fp, err := os.Create(filePath)
 	if err != nil {
 		return err
@@ -362,7 +362,7 @@ func writeNodeConfigurationToYAML(filePath string, results []Result, proxies map
 	return err
 }
 
-func writeToCSV(filePath string, results []Result) error {
+func writeToCSV(filePath string, results []models.Result) error {
 	csvFile, err := os.Create(filePath)
 	if err != nil {
 		return err

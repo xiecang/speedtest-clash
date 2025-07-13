@@ -20,12 +20,12 @@ type Test struct {
 	options      *models.Options
 	proxyUrl     *url.URL
 	proxies      map[string]models.CProxy
-	results      []Result
+	results      []models.Result
 	aliveProxies []models.CProxy
 	_testedSpeed bool
 }
 
-func sortResult(results []Result, sortField models.SortField) ([]Result, error) {
+func sortResult(results []models.Result, sortField models.SortField) ([]models.Result, error) {
 	if sortField == "" {
 		return results, nil
 	}
@@ -81,7 +81,7 @@ func (t *Test) filterProxies(proxies map[string]models.CProxy) map[string]models
 	return filteredProxies
 }
 
-func (t *Test) TestSpeed() ([]Result, error) {
+func (t *Test) TestSpeed() ([]models.Result, error) {
 	var allProxies, err = ReadProxies(t.options.ConfigPath, t.proxyUrl)
 	if err != nil {
 		return nil, err
@@ -106,7 +106,7 @@ func (t *Test) TestSpeed() ([]Result, error) {
 	return t.results, nil
 }
 
-func (t *Test) logResults(results []Result) {
+func (t *Test) logResults(results []models.Result) {
 	var format = "%s%-42s\t%-12s\t%-12s\t%-12s\t%-12s\t%-12s\t%-12s\033[0m\n"
 	fmt.Printf(format, "", "节点", "带宽", "延迟", "GPT Android", "GPT IOS", "GPT WEB", "Delay")
 	for _, result := range results {
@@ -123,7 +123,7 @@ func (t *Test) LogNum() {
 }
 
 func (t *Test) LogAlive() {
-	var rs []Result
+	var rs []models.Result
 	for _, result := range t.results {
 		if result.Alive() {
 			rs = append(rs, result)
@@ -179,12 +179,12 @@ func (t *Test) AliveProxies() ([]models.CProxy, error) {
 }
 
 // AliveProxiesWithResult 可访问的节点以及结果
-func (t *Test) AliveProxiesWithResult() ([]CProxyWithResult, error) {
+func (t *Test) AliveProxiesWithResult() ([]models.CProxyWithResult, error) {
 	if !t._testedSpeed {
 		_, _ = t.TestSpeed()
 	}
 	var (
-		proxies []CProxyWithResult
+		proxies []models.CProxyWithResult
 	)
 
 	for _, result := range t.results {
@@ -193,7 +193,7 @@ func (t *Test) AliveProxiesWithResult() ([]CProxyWithResult, error) {
 		}
 		var name = result.Name
 		var p = t.proxies[name]
-		proxies = append(proxies, CProxyWithResult{
+		proxies = append(proxies, models.CProxyWithResult{
 			Proxies: p,
 			Results: result,
 		})

@@ -1,8 +1,7 @@
-package speedtest
+package models
 
 import (
 	"fmt"
-	"github.com/xiecang/speedtest-clash/speedtest/models"
 	"regexp"
 	"strings"
 	"time"
@@ -16,7 +15,7 @@ var (
 )
 
 type CProxyWithResult struct {
-	Proxies models.CProxy
+	Proxies CProxy
 	Results Result
 }
 
@@ -25,7 +24,7 @@ type Result struct {
 	Bandwidth    float64
 	TTFB         time.Duration
 	Delay        uint16
-	CheckResults []models.CheckResult
+	CheckResults []CheckResult
 	URLForTest   map[string]bool
 }
 
@@ -80,10 +79,3 @@ func (r *Result) Printf(format string) {
 		fmt.Sprintf("%d", r.Delay),
 	)
 }
-
-// https://wiki.metacubex.one/en/config/proxy-providers/
-// proxy-providers:
-//  provider1:
-//    type: http
-//    url: "http://test.com"
-//    path: ./proxy_providers/provider1.yaml

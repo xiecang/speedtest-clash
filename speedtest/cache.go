@@ -1,6 +1,7 @@
 package speedtest
 
 import (
+	"github.com/xiecang/speedtest-clash/speedtest/models"
 	"sync"
 	"time"
 )
@@ -15,18 +16,18 @@ func SetCacheTimeout(t time.Duration) {
 }
 
 type resultCache struct {
-	result    *Result
+	result    *models.Result
 	cacheTime time.Time
 }
 
-func addResultCache(result *Result) {
+func addResultCache(result *models.Result) {
 	resultCaches.Store(result.Name, resultCache{
 		result:    result,
 		cacheTime: time.Now(),
 	})
 }
 
-func getCacheFromResult(name string) *Result {
+func getCacheFromResult(name string) *models.Result {
 	if cache, ok := resultCaches.Load(name); ok {
 		r := cache.(resultCache)
 		if time.Since(r.cacheTime) < cacheTimeout {

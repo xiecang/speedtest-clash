@@ -35,6 +35,13 @@ type CProxy struct {
 	SecretConfig map[string]any
 }
 
+// https://wiki.metacubex.one/en/config/proxy-providers/
+// proxy-providers:
+//  provider1:
+//    type: http
+//    url: "http://test.com"
+//    path: ./proxy_providers/provider1.yaml
+
 type ProxyProvider struct {
 	Url string `json:"url"`
 	// 支持自定义 header，后续再加吧
