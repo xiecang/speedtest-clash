@@ -14,7 +14,6 @@ import (
 
 const (
 	GPTTestURLAndroid = "https://android.chat.openai.com"
-	errMsg            = "Something went wrong. You may be connected to a disallowed ISP. "
 )
 
 func requestChatGPT(ctx context.Context, client *http.Client, url string) (bool, error) {

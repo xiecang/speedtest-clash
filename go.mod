@@ -5,6 +5,7 @@ go 1.23.0
 toolchain go1.24.4
 
 require (
+	filippo.io/intermediates v0.0.0-20250711024457-7755716c0f34
 	github.com/metacubex/mihomo v1.19.11
 	github.com/phuslu/log v1.0.118
 	gopkg.in/yaml.v3 v3.0.1

@@ -34,7 +34,7 @@ func checkProxy(ctx context.Context, proxy C.Proxy, types []models.CheckType) []
 				defer wg.Done()
 				r, err := f.Check(ctx, proxy)
 				if err != nil {
-					log.Errorln("[%s](%s) check %s failed, err: %s", proxy.Name(), proxy.Addr(), checkType, err)
+					log.Infoln("[%s](%s) check %s failed, err: %s", proxy.Name(), proxy.Addr(), checkType, err)
 				}
 				ch <- r
 			}(ctx, checkType, f, proxy)

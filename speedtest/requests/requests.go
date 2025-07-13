@@ -3,7 +3,9 @@ package requests
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
+	"filippo.io/intermediates"
 	"fmt"
 	"github.com/metacubex/mihomo/log"
 	"io"
@@ -28,6 +30,8 @@ type RequestOption struct {
 	// 代理链接
 	ProxyUrl *url.URL
 	Client   *http.Client
+	//
+	InsecureSkipVerify bool
 }
 
 type XcResponse struct {
@@ -76,6 +80,10 @@ func request(ctx context.Context, option *RequestOption) (*XcResponse, error) {
 		DialContext: (&net.Dialer{
 			Timeout: option.Timeout,
 		}).DialContext,
+		TLSClientConfig: &tls.Config{
+			InsecureSkipVerify: option.InsecureSkipVerify,
+			VerifyConnection:   intermediates.VerifyConnection,
+		},
 	}
 	if option.ProxyUrl != nil {
 		transport.Proxy = http.ProxyURL(option.ProxyUrl)
