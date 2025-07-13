@@ -199,7 +199,10 @@ func TestSpeed(proxies map[string]models.CProxy, options *models.Options) ([]mod
 			switch tp {
 			case C.Shadowsocks, C.ShadowsocksR, C.Snell, C.Socks5, C.Http, C.Vmess, C.Vless, C.Trojan, C.Hysteria, C.Hysteria2, C.WireGuard, C.Tuic:
 				result := TestProxyConcurrent(name, proxy, options)
-
+				countryR := checkProxy(context.Background(), proxy, []models.CheckType{models.CheckTypeCountry})
+				if len(countryR) > 0 {
+					result.Country = countryR[0].Value
+				}
 				if result.Alive() {
 					result.CheckResults = checkProxy(context.Background(), proxy, options.CheckTypes)
 

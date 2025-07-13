@@ -24,6 +24,7 @@ type Result struct {
 	Bandwidth    float64
 	TTFB         time.Duration
 	Delay        uint16
+	Country      string
 	CheckResults []CheckResult
 	URLForTest   map[string]bool
 }

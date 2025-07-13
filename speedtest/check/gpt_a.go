@@ -3,6 +3,7 @@ package check
 import (
 	"context"
 	"errors"
+	"github.com/metacubex/mihomo/common/convert"
 	C "github.com/metacubex/mihomo/constant"
 	"github.com/xiecang/speedtest-clash/speedtest/models"
 	"github.com/xiecang/speedtest-clash/speedtest/requests"
@@ -18,9 +19,12 @@ const (
 
 func requestChatGPT(ctx context.Context, client *http.Client, url string) (bool, error) {
 	resp, err := requests.Request(ctx, &requests.RequestOption{
-		Method:       http.MethodPost,
-		URL:          url,
-		Headers:      map[string]string{"Content-Type": "application/json"},
+		Method: http.MethodPost,
+		URL:    url,
+		Headers: map[string]string{
+			"Content-Type": "application/json",
+			"User-Agent":   convert.RandUserAgent(),
+		},
 		Timeout:      60 * time.Second,
 		RetryTimes:   3,
 		RetryTimeOut: 3 * time.Second,
@@ -68,7 +72,7 @@ func NewGPTAndroidChecker() models.Checker {
 func (g *gptAndroidChecker) Check(ctx context.Context, proxy C.Proxy) (result models.CheckResult, err error) {
 
 	client := requests.GetClient(proxy, timeout)
-	loc, err := getCountryCode(ctx, client)
+	loc, err := getCountryCode(ctx, client, GPTTrace)
 	if err != nil {
 		return models.NewCheckResult(g.tp, false, loc), err
 	}

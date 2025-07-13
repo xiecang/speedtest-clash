@@ -14,6 +14,7 @@ const (
 	CheckTypeDisney     CheckType = "disney"
 	CheckTypeNetflix    CheckType = "netflix"
 	CheckTypeGemini     CheckType = "gemini"
+	CheckTypeCountry    CheckType = "country"
 )
 
 type CheckResult struct {

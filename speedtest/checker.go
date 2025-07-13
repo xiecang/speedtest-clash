@@ -10,13 +10,14 @@ import (
 )
 
 var (
-	mp = map[models.CheckType]func() models.Checker{
-		models.CheckTypeGPTWeb:     check.NewGPTWebChecker,
-		models.CheckTypeGPTAndroid: check.NewGPTAndroidChecker,
-		models.CheckTypeGPTIOS:     check.NewGPTIOSChecker,
-		models.CheckTypeDisney:     check.NewDisneyChecker,
-		models.CheckTypeNetflix:    check.NewNetflixChecker,
-		models.CheckTypeGemini:     check.NewGeminiChecker,
+	mp = map[models.CheckType]models.Checker{
+		models.CheckTypeGPTWeb:     check.NewGPTWebChecker(),
+		models.CheckTypeGPTAndroid: check.NewGPTAndroidChecker(),
+		models.CheckTypeGPTIOS:     check.NewGPTIOSChecker(),
+		models.CheckTypeDisney:     check.NewDisneyChecker(),
+		models.CheckTypeNetflix:    check.NewNetflixChecker(),
+		models.CheckTypeGemini:     check.NewGeminiChecker(),
+		models.CheckTypeCountry:    check.NewCountryChecker(),
 	}
 )
 
@@ -29,10 +30,9 @@ func checkProxy(ctx context.Context, proxy C.Proxy, types []models.CheckType) []
 	for _, checkType := range types {
 		if f, exist := mp[checkType]; exist {
 			wg.Add(1)
-			go func(ctx context.Context, checkType models.CheckType, f func() models.Checker, proxy C.Proxy) {
+			go func(ctx context.Context, checkType models.CheckType, f models.Checker, proxy C.Proxy) {
 				defer wg.Done()
-				checker := f()
-				r, err := checker.Check(ctx, proxy)
+				r, err := f.Check(ctx, proxy)
 				if err != nil {
 					log.Errorln("[%s](%s) check %s failed, err: %s", proxy.Name(), proxy.Addr(), checkType, err)
 				}

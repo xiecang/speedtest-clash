@@ -2,6 +2,7 @@ package check
 
 import (
 	"context"
+	"github.com/metacubex/mihomo/common/convert"
 	C "github.com/metacubex/mihomo/constant"
 	"github.com/xiecang/speedtest-clash/speedtest/models"
 	"github.com/xiecang/speedtest-clash/speedtest/requests"
@@ -48,14 +49,17 @@ var gptSupportCountry = map[string]bool{
 	"UZ": true, "VU": true, "VN": true, "YE": true, "ZM": true, "ZW": true,
 }
 
-func getCountryCode(ctx context.Context, client *http.Client) (string, error) {
+func getCountryCode(ctx context.Context, client *http.Client, url string) (string, error) {
 	resp, err := requests.Request(ctx, &requests.RequestOption{
 		Method:       http.MethodGet,
-		URL:          GPTTrace,
+		URL:          url,
 		Timeout:      timeout,
 		RetryTimes:   retryTimes,
 		RetryTimeOut: retryTimeOut,
 		Client:       client,
+		Headers: map[string]string{
+			"User-Agent": convert.RandUserAgent(),
+		},
 	})
 	if err != nil {
 		return "", err
@@ -85,7 +89,7 @@ func NewGPTWebChecker() models.Checker {
 func (g *gptWebChecker) Check(ctx context.Context, proxy C.Proxy) (result models.CheckResult, err error) {
 	client := requests.GetClient(proxy, timeout)
 
-	loc, err := getCountryCode(ctx, client)
+	loc, err := getCountryCode(ctx, client, GPTTrace)
 	if err != nil {
 		return models.NewCheckResult(g.tp, false, loc), err
 	}

@@ -23,7 +23,7 @@ func NewGPTIOSChecker() models.Checker {
 
 func (g *gptIOSChecker) Check(ctx context.Context, proxy C.Proxy) (result models.CheckResult, err error) {
 	client := requests.GetClient(proxy, timeout)
-	loc, err := getCountryCode(ctx, client)
+	loc, err := getCountryCode(ctx, client, GPTTrace)
 	if err != nil {
 		return models.NewCheckResult(g.tp, false, loc), err
 	}
