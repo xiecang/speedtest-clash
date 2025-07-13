@@ -48,6 +48,30 @@ var gptSupportCountry = map[string]bool{
 	"UZ": true, "VU": true, "VN": true, "YE": true, "ZM": true, "ZW": true,
 }
 
+func getCountryCode(ctx context.Context, client *http.Client) (string, error) {
+	resp, err := requests.Request(ctx, &requests.RequestOption{
+		Method:       http.MethodGet,
+		URL:          GPTTrace,
+		Timeout:      timeout,
+		RetryTimes:   retryTimes,
+		RetryTimeOut: retryTimeOut,
+		Client:       client,
+	})
+	if err != nil {
+		return "", err
+	}
+	lines := strings.Split(string(resp.Body), "\n")
+	var loc string
+	for _, line := range lines {
+		if !strings.Contains(line, "loc=") {
+			continue
+		}
+		loc = strings.TrimPrefix(line, "loc=")
+		break
+	}
+	return loc, nil
+}
+
 type gptWebChecker struct {
 	tp models.CheckType
 }
@@ -61,30 +85,25 @@ func NewGPTWebChecker() models.Checker {
 func (g *gptWebChecker) Check(ctx context.Context, proxy C.Proxy) (result models.CheckResult, err error) {
 	client := requests.GetClient(proxy, timeout)
 
-	resp, err := requests.Request(ctx, &requests.RequestOption{
-		Method:       http.MethodGet,
-		URL:          GPTTrace,
-		Timeout:      timeout,
-		RetryTimes:   retryTimes,
-		RetryTimeOut: retryTimeOut,
-		Client:       client,
-	})
-	if err != nil || resp.StatusCode != http.StatusOK {
-		return models.NewCheckResult(g.tp, false, ""), err
+	loc, err := getCountryCode(ctx, client)
+	if err != nil {
+		return models.NewCheckResult(g.tp, false, loc), err
 	}
-	body := string(resp.Body)
-	lines := strings.Split(string(body), "\n")
-	var loc string
-	for _, line := range lines {
-		if !strings.Contains(line, "loc=") {
-			continue
-		}
-		loc = strings.Replace(line, "loc=", "", 1)
-		loc = strings.ToUpper(loc)
-		break
-	}
-	if gptSupportCountry[loc] {
-		return models.NewCheckResult(g.tp, true, loc), nil
-	}
-	return models.NewCheckResult(g.tp, false, ""), err
+
+	//resp, err := requests.Request(ctx, &requests.RequestOption{
+	//	Method:       http.MethodGet,
+	//	URL:          "https://api.openai.com/compliance/cookie_requirements",
+	//	Timeout:      timeout,
+	//	RetryTimes:   retryTimes,
+	//	RetryTimeOut: retryTimeOut,
+	//	Client:       client,
+	//})
+	//if err != nil || resp.StatusCode != http.StatusOK {
+	//	return models.NewCheckResult(g.tp, false, loc), err
+	//}
+	//bodyStr := strings.ToLower(string(resp.Body))
+	//
+	//return models.NewCheckResult(g.tp, strings.Contains(bodyStr, "unsupported_country"), loc), nil
+
+	return models.NewCheckResult(g.tp, gptSupportCountry[loc], loc), err
 }

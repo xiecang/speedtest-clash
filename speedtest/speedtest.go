@@ -225,7 +225,7 @@ func (t *Test) AliveProxiesToJson() ([]byte, error) {
 		proxies = append(proxies, p)
 		// 把 GPT 测试信息放入
 		d := p.SecretConfig
-		// fixme: add results
+		d["_check"] = result.CheckResults
 		ps = append(ps, d)
 	}
 	t.aliveProxies = proxies

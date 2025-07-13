@@ -11,6 +11,9 @@ const (
 	CheckTypeGPTWeb     CheckType = "gpt_web"
 	CheckTypeGPTAndroid CheckType = "gpt_android"
 	CheckTypeGPTIOS     CheckType = "gpt_ios"
+	CheckTypeDisney     CheckType = "disney"
+	CheckTypeNetflix    CheckType = "netflix"
+	CheckTypeGemini     CheckType = "gemini"
 )
 
 type CheckResult struct {

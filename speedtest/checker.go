@@ -14,6 +14,9 @@ var (
 		models.CheckTypeGPTWeb:     check.NewGPTWebChecker,
 		models.CheckTypeGPTAndroid: check.NewGPTAndroidChecker,
 		models.CheckTypeGPTIOS:     check.NewGPTIOSChecker,
+		models.CheckTypeDisney:     check.NewDisneyChecker,
+		models.CheckTypeNetflix:    check.NewNetflixChecker,
+		models.CheckTypeGemini:     check.NewGeminiChecker,
 	}
 )
 
