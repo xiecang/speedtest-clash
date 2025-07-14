@@ -20,13 +20,13 @@ type CProxyWithResult struct {
 }
 
 type Result struct {
-	Name         string
-	Bandwidth    float64
-	TTFB         time.Duration
-	Delay        uint16
-	Country      string
-	CheckResults []CheckResult
-	URLForTest   map[string]bool
+	Name         string          `json:"name"`
+	Bandwidth    float64         `json:"bandwidth"`
+	TTFB         time.Duration   `json:"TTFB"`
+	Delay        uint16          `json:"delay"`
+	Country      string          `json:"country"`
+	CheckResults []CheckResult   `json:"check_results"`
+	URLForTest   map[string]bool `json:"url_for_test"`
 }
 
 func (r *Result) Alive() bool {

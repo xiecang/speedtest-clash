@@ -18,9 +18,9 @@ const (
 )
 
 type CheckResult struct {
-	OK    bool
-	Value string
-	Type  CheckType
+	OK    bool      `json:"ok"`
+	Value string    `json:"value"`
+	Type  CheckType `json:"type"`
 }
 
 func NewCheckResult(tp CheckType, ok bool, value string) CheckResult {
