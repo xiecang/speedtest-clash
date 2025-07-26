@@ -15,8 +15,8 @@ var (
 )
 
 type CProxyWithResult struct {
-	Proxies CProxy
-	Results Result
+	Result
+	Proxy CProxy
 }
 
 type Result struct {

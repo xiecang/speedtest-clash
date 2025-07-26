@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"github.com/metacubex/mihomo/log"
@@ -45,7 +46,7 @@ func filterAlive(w http.ResponseWriter, req *http.Request) {
 		resError(w, err)
 		return
 	}
-	_, err = t.TestSpeed()
+	_, err = t.TestSpeed(context.Background())
 	if err != nil {
 		log.Errorln("test speed error: %v", err)
 		resError(w, err)

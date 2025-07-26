@@ -16,18 +16,18 @@ func SetCacheTimeout(t time.Duration) {
 }
 
 type resultCache struct {
-	result    *models.Result
+	result    *models.CProxyWithResult
 	cacheTime time.Time
 }
 
-func addResultCache(result *models.Result) {
+func addResultCache(result *models.CProxyWithResult) {
 	resultCaches.Store(result.Name, resultCache{
 		result:    result,
 		cacheTime: time.Now(),
 	})
 }
 
-func getCacheFromResult(name string) *models.Result {
+func getCacheFromResult(name string) *models.CProxyWithResult {
 	if cache, ok := resultCaches.Load(name); ok {
 		r := cache.(resultCache)
 		if time.Since(r.cacheTime) < cacheTimeout {

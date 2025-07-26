@@ -2,6 +2,7 @@ package speedtest
 
 import (
 	"context"
+	"github.com/metacubex/mihomo/common/convert"
 	"github.com/metacubex/mihomo/common/utils"
 	C "github.com/metacubex/mihomo/constant"
 	"github.com/xiecang/speedtest-clash/speedtest/models"
@@ -28,76 +29,78 @@ var (
 	delayTestUrl = "https://cp.cloudflare.com/generate_204"
 )
 
-func loadProxies(buf []byte, proxyUrl *url.URL) (map[string]models.CProxy, error) {
-	rawCfg := &models.RawConfig{
-		Proxies: []map[string]any{},
-	}
-	if err := yaml.Unmarshal(buf, rawCfg); err != nil {
-		return nil, err
-	}
-	proxies := make(map[string]models.CProxy)
-	proxiesConfig := rawCfg.Proxies
-	providersConfig := rawCfg.Providers
-
-	for i, config := range proxiesConfig {
-		proxy, err := adapter.ParseProxy(config)
-		if err != nil {
-			log.Warnln("ParseProxy error: proxy %d: %s", i, err)
-			continue
+func loadProxies(buf []byte, proxyUrl *url.URL, proxiesCh chan models.CProxy, errorsCh chan error) {
+	go func() {
+		rawCfg := &models.RawConfig{
+			Proxies: []map[string]any{},
 		}
-
-		var name = proxy.Name()
-		if _, exist := proxies[proxy.Name()]; exist {
-			// 粗暴重命名, 先不判断配置是否一致了，这里可以全测，结果交给外部程序去处理吧
-			name += "_1"
-			log.Warnln("names %s is already taken, use the name %s instead.", proxy.Name(), name)
-		}
-		proxies[name] = models.CProxy{Proxy: proxy, SecretConfig: config}
-	}
-
-	var (
-		wg   = sync.WaitGroup{}
-		lock = sync.Mutex{}
-	)
-	for name, config := range providersConfig {
-		wg.Add(1)
-		go func(name string, config models.ProxyProvider) {
-			defer wg.Done()
-			if name == provider.ReservedName {
-				log.Warnln("can not defined a provider called `%s`", provider.ReservedName)
-				return
-			}
-			proxiesFromProvider, err := ReadProxies(config.Url, proxyUrl)
+		if err := yaml.Unmarshal(buf, rawCfg); err != nil {
+			proxyList, err := convert.ConvertsV2Ray(buf)
 			if err != nil {
-				log.Warnln("read provider proxies error. url:%s err: %v", config.Url, err)
+				errorsCh <- err
 				return
 			}
+			for _, p := range proxyList {
+				proxy, err := adapter.ParseProxy(p)
+				if err != nil {
+					log.Warnln("ParseProxy error: proxy %s", err)
+					continue
+				}
 
-			lock.Lock()
-			for proxyName, proxy := range proxiesFromProvider {
-				// 这里没有处理重名问题
-				proxies[fmt.Sprintf("[%s] %s", name, proxyName)] = proxy
+				proxiesCh <- models.CProxy{Proxy: proxy, SecretConfig: p}
 			}
-			lock.Unlock()
-		}(name, config)
-	}
-	wg.Wait()
-	return proxies, nil
+			return
+		}
+		proxiesConfig := rawCfg.Proxies
+		providersConfig := rawCfg.Providers
+
+		for i, config := range proxiesConfig {
+			proxy, err := adapter.ParseProxy(config)
+			if err != nil {
+				log.Warnln("ParseProxy error: proxy %d: %s", i, err)
+				continue
+			}
+
+			proxiesCh <- models.CProxy{Proxy: proxy, SecretConfig: config}
+		}
+
+		var (
+			wg = sync.WaitGroup{}
+		)
+		for name, config := range providersConfig {
+			wg.Add(1)
+			go func(name string, config models.ProxyProvider) {
+				defer wg.Done()
+				if name == provider.ReservedName {
+					log.Warnln("can not defined a provider called `%s`", provider.ReservedName)
+					return
+				}
+				pc, ec := ReadProxies(config.Url, proxyUrl)
+				for p := range pc {
+					proxiesCh <- p
+				}
+				for e := range ec {
+					errorsCh <- e
+				}
+				//for _, proxy := range proxiesFromProvider {
+				//	proxiesCh <- proxy
+				//}
+			}(name, config)
+		}
+		wg.Wait()
+
+	}()
 }
 
 // ReadProxies 从网络下载或者本地读取配置文件 configPathConfig 是配置地址，多个之间用 | 分割
-func ReadProxies(configPathConfig string, proxyUrl *url.URL) (map[string]models.CProxy, error) {
-	var (
-		allProxies = make(map[string]models.CProxy)
-		wg         = sync.WaitGroup{}
-		lock       = sync.Mutex{}
-	)
-
+func ReadProxies(configPathConfig string, proxyUrl *url.URL) (chan models.CProxy, chan error) {
+	proxiesCh := make(chan models.CProxy, 10)
+	errorsCh := make(chan error, 1)
 	for _, configPath := range strings.Split(configPathConfig, "|") {
-		wg.Add(1)
 		go func(configPath string) {
-			defer wg.Done()
+
 			var body []byte
+			var err error
 			if strings.HasPrefix(configPath, "http") {
 				resp, err := requests.Request(context.Background(), &requests.RequestOption{
 					Method:       http.MethodGet,
@@ -110,39 +113,29 @@ func ReadProxies(configPathConfig string, proxyUrl *url.URL) (map[string]models.
 				})
 				if err != nil {
 					log.Warnln("failed to fetch config: %s, err: %s", configPath, err)
+					errorsCh <- err
 					return
 				}
 				if resp.StatusCode != http.StatusOK {
 					log.Warnln("failed to fetch config: %s, status code: %d", configPath, resp.StatusCode)
+					errorsCh <- fmt.Errorf("status code: %d", resp.StatusCode)
 					return
 				}
 				body = resp.Body
 			} else {
-				var err error
 				body, err = os.ReadFile(configPath)
 				if err != nil {
-					log.Warnln("failed to read config: %s, err: %s", configPath, err)
+					log.Warnln("failed to read local file: %s, err: %s", configPath, err)
+					errorsCh <- err
 					return
 				}
 			}
 
-			lps, err := loadProxies(body, proxyUrl)
-			if err != nil {
-				log.Warnln("failed to load proxies: %s, err: %s", configPath, err)
-				return
-			}
+			loadProxies(body, proxyUrl, proxiesCh, errorsCh)
 
-			lock.Lock()
-			for k, p := range lps {
-				if _, ok := allProxies[k]; !ok {
-					allProxies[k] = p
-				}
-			}
-			lock.Unlock()
 		}(configPath)
 	}
-	wg.Wait()
-	return allProxies, nil
+	return proxiesCh, errorsCh
 }
 
 func TestURLAvailable(urls []string, proxy C.Proxy, timeout time.Duration) map[string]bool {
@@ -179,51 +172,92 @@ func TestURLAvailable(urls []string, proxy C.Proxy, timeout time.Duration) map[s
 	return result
 }
 
-func TestSpeed(proxies map[string]models.CProxy, options *models.Options) ([]models.Result, error) {
-	results := make([]models.Result, 0, len(proxies))
-	var err error
+func testspeed(proxy models.CProxy, options *models.Options) (*models.CProxyWithResult, error) {
+	var name = proxy.Name()
 
-	var wg = sync.WaitGroup{}
-	for name, proxy := range proxies {
-		wg.Add(1)
-		go func(name string, proxy models.CProxy) {
-			defer wg.Done()
-
-			// get from cache
-			if cache := getCacheFromResult(name); cache != nil {
-				results = append(results, *cache)
-				return
-			}
-
-			var tp = proxy.Type()
-			switch tp {
-			case C.Shadowsocks, C.ShadowsocksR, C.Snell, C.Socks5, C.Http, C.Vmess, C.Vless, C.Trojan, C.Hysteria, C.Hysteria2, C.WireGuard, C.Tuic:
-				result := TestProxyConcurrent(name, proxy, options)
-				if result.Alive() {
-					countryR := checkProxy(context.Background(), proxy, []models.CheckType{models.CheckTypeCountry})
-					if len(countryR) > 0 {
-						result.Country = countryR[0].Value
-					}
-					result.CheckResults = checkProxy(context.Background(), proxy, options.CheckTypes)
-
-					if options.URLForTest != nil {
-						result.URLForTest = TestURLAvailable(options.URLForTest, proxy, options.Timeout)
-					}
-				}
-				results = append(results, *result)
-
-				// add cache
-				addResultCache(result)
-			case C.Direct, C.Reject, C.Relay, C.Selector, C.Fallback, C.URLTest, C.LoadBalance:
-				return
-			default:
-				err = fmt.Errorf("unsupported proxy type: %s", tp)
-			}
-		}(name, proxy)
+	// get from cache
+	if cache := getCacheFromResult(name); cache != nil {
+		return cache, nil
 	}
-	wg.Wait()
-	return results, err
+
+	var (
+		tp  = proxy.Type()
+		err error
+	)
+	switch tp {
+	case C.Shadowsocks, C.ShadowsocksR, C.Snell, C.Socks5, C.Http, C.Vmess, C.Vless, C.Trojan, C.Hysteria, C.Hysteria2, C.WireGuard, C.Tuic:
+		result := TestProxyConcurrent(name, proxy, options)
+		if result.Alive() {
+			countryR := checkProxy(context.Background(), proxy, []models.CheckType{models.CheckTypeCountry})
+			if len(countryR) > 0 {
+				result.Country = countryR[0].Value
+			}
+			result.CheckResults = checkProxy(context.Background(), proxy, options.CheckTypes)
+
+			if options.URLForTest != nil {
+				result.URLForTest = TestURLAvailable(options.URLForTest, proxy, options.Timeout)
+			}
+		}
+		var r = &models.CProxyWithResult{
+			Result: *result,
+			Proxy:  proxy,
+		}
+		// add cache
+		addResultCache(r)
+		return r, nil
+	case C.Direct, C.Reject, C.Relay, C.Selector, C.Fallback, C.URLTest, C.LoadBalance:
+		return nil, nil
+	default:
+		err = fmt.Errorf("unsupported proxy type: %s", tp)
+	}
+	return nil, err
 }
+
+//func TestSpeed(proxies map[string]models.CProxy, options *models.Options) ([]models.Result, error) {
+//	results := make([]models.Result, 0, len(proxies))
+//	var err error
+//
+//	var wg = sync.WaitGroup{}
+//	for name, proxy := range proxies {
+//		wg.Add(1)
+//		go func(name string, proxy models.CProxy) {
+//			defer wg.Done()
+//
+//			// get from cache
+//			if cache := getCacheFromResult(name); cache != nil {
+//				results = append(results, *cache)
+//				return
+//			}
+//
+//			var tp = proxy.Type()
+//			switch tp {
+//			case C.Shadowsocks, C.ShadowsocksR, C.Snell, C.Socks5, C.Http, C.Vmess, C.Vless, C.Trojan, C.Hysteria, C.Hysteria2, C.WireGuard, C.Tuic:
+//				result := TestProxyConcurrent(name, proxy, options)
+//				if result.Alive() {
+//					countryR := checkProxy(context.Background(), proxy, []models.CheckType{models.CheckTypeCountry})
+//					if len(countryR) > 0 {
+//						result.Country = countryR[0].Value
+//					}
+//					result.CheckResults = checkProxy(context.Background(), proxy, options.CheckTypes)
+//
+//					if options.URLForTest != nil {
+//						result.URLForTest = TestURLAvailable(options.URLForTest, proxy, options.Timeout)
+//					}
+//				}
+//				results = append(results, *result)
+//
+//				// add cache
+//				addResultCache(result)
+//			case C.Direct, C.Reject, C.Relay, C.Selector, C.Fallback, C.URLTest, C.LoadBalance:
+//				return
+//			default:
+//				err = fmt.Errorf("unsupported proxy type: %s", tp)
+//			}
+//		}(name, proxy)
+//	}
+//	wg.Wait()
+//	return results, err
+//}
 
 type proxyTest struct {
 	name   string
