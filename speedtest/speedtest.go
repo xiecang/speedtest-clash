@@ -124,8 +124,7 @@ func (t *Test) filterProxies(proxies map[string]models.CProxy) map[string]models
 	return filteredProxies
 }
 
-func (t *Test) ReadProxies(configPathConfig string, proxyUrl *url.URL) {
-	var wg sync.WaitGroup
+func (t *Test) ReadProxies(ctx context.Context, wg *sync.WaitGroup, configPathConfig string, proxyUrl *url.URL) {
 	paths := strings.Split(configPathConfig, "|")
 	wg.Add(len(paths))
 
@@ -135,7 +134,7 @@ func (t *Test) ReadProxies(configPathConfig string, proxyUrl *url.URL) {
 			var body []byte
 			var err error
 			if strings.HasPrefix(configPath, "http") {
-				resp, err := requests.Request(context.Background(), &requests.RequestOption{
+				resp, err := requests.Request(ctx, &requests.RequestOption{
 					Method:       http.MethodGet,
 					URL:          configPath,
 					Headers:      map[string]string{"User-Agent": "clash-meta"},
@@ -164,20 +163,14 @@ func (t *Test) ReadProxies(configPathConfig string, proxyUrl *url.URL) {
 				}
 			}
 
-			t.loadProxies(body, proxyUrl)
+			t.loadProxies(ctx, wg, body, proxyUrl)
 
 		}(configPath)
 	}
 
-	go func() {
-		wg.Wait()
-		close(t.proxiesCh)
-		close(t.errCh)
-	}()
-
 }
 
-func (t *Test) loadProxies(buf []byte, proxyUrl *url.URL) {
+func (t *Test) loadProxies(ctx context.Context, wg *sync.WaitGroup, buf []byte, proxyUrl *url.URL) {
 	rawCfg := &models.RawConfig{
 		Proxies: []map[string]any{},
 	}
@@ -211,9 +204,6 @@ func (t *Test) loadProxies(buf []byte, proxyUrl *url.URL) {
 		t.proxiesCh <- models.CProxy{Proxy: proxy, SecretConfig: config}
 	}
 
-	var (
-		wg = sync.WaitGroup{}
-	)
 	for name, config := range providersConfig {
 		wg.Add(1)
 		go func(name string, config models.ProxyProvider) {
@@ -222,18 +212,23 @@ func (t *Test) loadProxies(buf []byte, proxyUrl *url.URL) {
 				log.Warnln("can not defined a provider called `%s`", provider.ReservedName)
 				return
 			}
-			t.ReadProxies(config.Url, proxyUrl)
+			t.ReadProxies(ctx, wg, config.Url, proxyUrl)
 			//for _, proxy := range proxiesFromProvider {
 			//	proxiesCh <- proxy
 			//}
 		}(name, config)
 	}
-	wg.Wait()
 
 }
 
 func (t *Test) TestSpeed(ctx context.Context) ([]models.CProxyWithResult, error) {
-	t.ReadProxies(t.options.ConfigPath, t.proxyUrl)
+	var wg sync.WaitGroup
+	t.ReadProxies(ctx, &wg, t.options.ConfigPath, t.proxyUrl)
+	go func() {
+		wg.Wait()
+		close(t.proxiesCh)
+		close(t.errCh)
+	}()
 	var (
 		maxConcurrency = runtime.NumCPU()
 		resultsCh      = make(chan *models.CProxyWithResult, 10)
