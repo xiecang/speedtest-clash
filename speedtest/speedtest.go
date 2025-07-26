@@ -230,7 +230,7 @@ func (t *Test) TestSpeed(ctx context.Context) ([]models.CProxyWithResult, error)
 		close(t.errCh)
 	}()
 	var (
-		maxConcurrency = runtime.NumCPU()
+		maxConcurrency = runtime.NumCPU() * 10
 		resultsCh      = make(chan *models.CProxyWithResult, 10)
 	)
 	// 启动测速 worker

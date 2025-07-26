@@ -2,7 +2,6 @@ package check
 
 import (
 	"context"
-	"github.com/metacubex/mihomo/common/convert"
 	C "github.com/metacubex/mihomo/constant"
 	"github.com/xiecang/speedtest-clash/speedtest/models"
 	"github.com/xiecang/speedtest-clash/speedtest/requests"
@@ -29,7 +28,7 @@ func (n netflixChecker) Check(ctx context.Context, proxy C.Proxy) (result models
 		RetryTimeOut: retryTimeOut,
 		Client:       client,
 		Headers: map[string]string{
-			"User-Agent": convert.RandUserAgent(),
+			"User-Agent": userAgent,
 		},
 	})
 	if err != nil {
