@@ -361,6 +361,19 @@ func (t *Test) AliveProxiesWithResult() ([]models.CProxyWithResult, error) {
 
 // AliveProxiesToJson 可访问的节点, 返回 JSON string
 func (t *Test) AliveProxiesToJson() ([]byte, error) {
+	ps, err := t.AliveProxies()
+	if err != nil {
+		return nil, err
+	}
+	data, err := json.Marshal(ps)
+	if err != nil {
+		return nil, err
+	}
+	return data, nil
+}
+
+// AliveProxies 可访问的节点
+func (t *Test) AliveProxies() ([]map[string]interface{}, error) {
 	if !t._testedSpeed {
 		_, _ = t.TestSpeed(context.Background())
 	}
@@ -375,11 +388,7 @@ func (t *Test) AliveProxiesToJson() ([]byte, error) {
 
 	}
 
-	data, err := json.Marshal(ps)
-	if err != nil {
-		return nil, err
-	}
-	return data, nil
+	return ps, nil
 }
 
 func checkOptions(options *models.Options) (bool, string) {
