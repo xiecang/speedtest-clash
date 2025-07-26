@@ -12,131 +12,16 @@ import (
 
 	"encoding/csv"
 	"fmt"
-	"github.com/metacubex/mihomo/adapter"
-	"github.com/metacubex/mihomo/adapter/provider"
-	"github.com/metacubex/mihomo/log"
 	"io"
 	"net/http"
-	"net/url"
 	"os"
 	"strconv"
-	"strings"
-	"sync/atomic"
 	"time"
 )
 
 var (
 	delayTestUrl = "https://cp.cloudflare.com/generate_204"
 )
-
-func loadProxies(buf []byte, proxyUrl *url.URL, proxiesCh chan models.CProxy, errorsCh chan error) {
-	go func() {
-		rawCfg := &models.RawConfig{
-			Proxies: []map[string]any{},
-		}
-		if err := yaml.Unmarshal(buf, rawCfg); err != nil {
-			proxyList, err := convert.ConvertsV2Ray(buf)
-			if err != nil {
-				errorsCh <- err
-				return
-			}
-			for _, p := range proxyList {
-				proxy, err := adapter.ParseProxy(p)
-				if err != nil {
-					log.Warnln("ParseProxy error: proxy %s", err)
-					continue
-				}
-
-				proxiesCh <- models.CProxy{Proxy: proxy, SecretConfig: p}
-			}
-			return
-		}
-		proxiesConfig := rawCfg.Proxies
-		providersConfig := rawCfg.Providers
-
-		for i, config := range proxiesConfig {
-			proxy, err := adapter.ParseProxy(config)
-			if err != nil {
-				log.Warnln("ParseProxy error: proxy %d: %s", i, err)
-				continue
-			}
-
-			proxiesCh <- models.CProxy{Proxy: proxy, SecretConfig: config}
-		}
-
-		var (
-			wg = sync.WaitGroup{}
-		)
-		for name, config := range providersConfig {
-			wg.Add(1)
-			go func(name string, config models.ProxyProvider) {
-				defer wg.Done()
-				if name == provider.ReservedName {
-					log.Warnln("can not defined a provider called `%s`", provider.ReservedName)
-					return
-				}
-				pc, ec := ReadProxies(config.Url, proxyUrl)
-				for p := range pc {
-					proxiesCh <- p
-				}
-				for e := range ec {
-					errorsCh <- e
-				}
-				//for _, proxy := range proxiesFromProvider {
-				//	proxiesCh <- proxy
-				//}
-			}(name, config)
-		}
-		wg.Wait()
-
-	}()
-}
-
-// ReadProxies 从网络下载或者本地读取配置文件 configPathConfig 是配置地址，多个之间用 | 分割
-func ReadProxies(configPathConfig string, proxyUrl *url.URL) (chan models.CProxy, chan error) {
-	proxiesCh := make(chan models.CProxy, 10)
-	errorsCh := make(chan error, 1)
-	for _, configPath := range strings.Split(configPathConfig, "|") {
-		go func(configPath string) {
-
-			var body []byte
-			var err error
-			if strings.HasPrefix(configPath, "http") {
-				resp, err := requests.Request(context.Background(), &requests.RequestOption{
-					Method:       http.MethodGet,
-					URL:          configPath,
-					Headers:      map[string]string{"User-Agent": "clash-meta"},
-					Timeout:      60 * time.Second,
-					RetryTimes:   3,
-					RetryTimeOut: 3 * time.Second,
-					ProxyUrl:     proxyUrl,
-				})
-				if err != nil {
-					log.Warnln("failed to fetch config: %s, err: %s", configPath, err)
-					errorsCh <- err
-					return
-				}
-				if resp.StatusCode != http.StatusOK {
-					log.Warnln("failed to fetch config: %s, status code: %d", configPath, resp.StatusCode)
-					errorsCh <- fmt.Errorf("status code: %d", resp.StatusCode)
-					return
-				}
-				body = resp.Body
-			} else {
-				body, err = os.ReadFile(configPath)
-				if err != nil {
-					log.Warnln("failed to read local file: %s, err: %s", configPath, err)
-					errorsCh <- err
-					return
-				}
-			}
-
-			loadProxies(body, proxyUrl, proxiesCh, errorsCh)
-
-		}(configPath)
-	}
-	return proxiesCh, errorsCh
-}
 
 func TestURLAvailable(urls []string, proxy C.Proxy, timeout time.Duration) map[string]bool {
 	if len(urls) == 0 {
@@ -172,7 +57,7 @@ func TestURLAvailable(urls []string, proxy C.Proxy, timeout time.Duration) map[s
 	return result
 }
 
-func testspeed(proxy models.CProxy, options *models.Options) (*models.CProxyWithResult, error) {
+func testspeed(ctx context.Context, proxy models.CProxy, options *models.Options) (*models.CProxyWithResult, error) {
 	var name = proxy.Name()
 
 	// get from cache
@@ -186,18 +71,7 @@ func testspeed(proxy models.CProxy, options *models.Options) (*models.CProxyWith
 	)
 	switch tp {
 	case C.Shadowsocks, C.ShadowsocksR, C.Snell, C.Socks5, C.Http, C.Vmess, C.Vless, C.Trojan, C.Hysteria, C.Hysteria2, C.WireGuard, C.Tuic:
-		result := TestProxyConcurrent(name, proxy, options)
-		if result.Alive() {
-			countryR := checkProxy(context.Background(), proxy, []models.CheckType{models.CheckTypeCountry})
-			if len(countryR) > 0 {
-				result.Country = countryR[0].Value
-			}
-			result.CheckResults = checkProxy(context.Background(), proxy, options.CheckTypes)
-
-			if options.URLForTest != nil {
-				result.URLForTest = TestURLAvailable(options.URLForTest, proxy, options.Timeout)
-			}
-		}
+		result := TestProxy(ctx, name, proxy, options)
 		var r = &models.CProxyWithResult{
 			Result: *result,
 			Proxy:  proxy,
@@ -232,7 +106,7 @@ func testspeed(proxy models.CProxy, options *models.Options) (*models.CProxyWith
 //			var tp = proxy.Type()
 //			switch tp {
 //			case C.Shadowsocks, C.ShadowsocksR, C.Snell, C.Socks5, C.Http, C.Vmess, C.Vless, C.Trojan, C.Hysteria, C.Hysteria2, C.WireGuard, C.Tuic:
-//				result := TestProxyConcurrent(name, proxy, options)
+//				result := TestProxy(name, proxy, options)
 //				if result.Alive() {
 //					countryR := checkProxy(context.Background(), proxy, []models.CheckType{models.CheckTypeCountry})
 //					if len(countryR) > 0 {
@@ -277,13 +151,19 @@ func newProxyTest(name string, proxy C.Proxy, option *models.Options) *proxyTest
 	}
 }
 
-func (s *proxyTest) test(downloadSize int) (time.Duration, int64, error) {
+func (s *proxyTest) testBandwidth(ctx context.Context, downloadSize int) (time.Duration, float64, error) {
 	var (
 		client         = s.client
 		livenessObject = s.option.LivenessAddr
 	)
+	url := fmt.Sprintf(livenessObject, downloadSize)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return 0, 0, fmt.Errorf("create request failed, err: %v", err)
+	}
 	start := time.Now()
-	resp, err := client.Get(fmt.Sprintf(livenessObject, downloadSize))
+	req.Header.Set("User-Agent", convert.RandUserAgent())
+	resp, err := client.Do(req)
 	if err != nil {
 		return 0, 0, fmt.Errorf("connect test domain failed, err: %v", err)
 	}
@@ -297,81 +177,141 @@ func (s *proxyTest) test(downloadSize int) (time.Duration, int64, error) {
 	if written == 0 {
 		return 0, 0, fmt.Errorf("test domain return empty body")
 	}
-	//downloadTime := time.Since(start) - ttfb
-	//bandwidth := float64(written) / downloadTime.Seconds()
+	downloadTime := time.Since(start) - ttfb
+	bandwidth := (float64(written) * 8) / downloadTime.Seconds() / 1e3 // 转换为 Kbps
 
-	return ttfb, written, nil
+	return ttfb, bandwidth, nil
 }
 
-func (s *proxyTest) concurrentTest() *models.Result {
-	var (
-		name            = s.name
-		option          = s.option
-		downloadSize    = option.DownloadSize
-		concurrentCount = option.Concurrent
-	)
-	if concurrentCount <= 0 {
-		concurrentCount = 1
-	}
+func (s *proxyTest) testDelay() uint16 {
+	const tryCount = 3
+	results := make(chan uint16, tryCount)
+	var wg sync.WaitGroup
 
-	var (
-		chunkSize  = downloadSize / concurrentCount
-		totalTTFB  = int64(0)
-		downloaded = int64(0)
-		count      = int64(0)
-		delay      uint16
-	)
-
-	var wg = sync.WaitGroup{}
-	start := time.Now()
-	for i := 0; i < concurrentCount; i++ {
+	for i := 0; i < tryCount; i++ {
 		wg.Add(1)
-		go func(i int) {
-			defer wg.Done()
-			ttfb, w, err := s.test(chunkSize)
-			if err != nil {
-				log.Debugln("Test: %s failed, %v", s.name, err)
-			} else {
-				atomic.AddInt64(&downloaded, w)
-				atomic.AddInt64(&totalTTFB, int64(ttfb))
-				atomic.AddInt64(&count, 1)
-			}
-		}(i)
-
 		go func() {
+			defer wg.Done()
 			//	200,204
-			expectedStatus, err := utils.NewUnsignedRanges[uint16]("200,204")
-			if err != nil {
-				return
-			}
-
-			if d, err := s.proxy.URLTest(context.Background(), delayTestUrl, expectedStatus); err == nil {
-				delay = d
-			}
-
+			expectedStatus, _ := utils.NewUnsignedRanges[uint16]("200,204")
+			d, _ := s.proxy.URLTest(context.Background(), delayTestUrl, expectedStatus)
+			results <- d
 		}()
 	}
-	wg.Wait()
-	downloadTime := time.Since(start)
 
-	var t time.Duration
-	if count > 0 {
-		t = time.Duration(totalTTFB / count)
+	wg.Wait()
+	close(results)
+
+	m := uint16(0xFFFF)
+	for d := range results {
+		if d > 0 && d < m {
+			m = d
+		}
+	}
+	if m == 0xFFFF {
+		return 0
+	}
+	return m
+}
+
+func (s *proxyTest) Test(ctx context.Context) *models.Result {
+	var (
+		name       = s.name
+		option     = s.option
+		proxy      = s.proxy
+		chunkSize  = option.DownloadSize
+		checkTypes = option.CheckTypes
+		URLForTest = option.URLForTest
+		timeout    = option.Timeout
+	)
+
+	ttfb, bandwidth, err := s.testBandwidth(ctx, chunkSize)
+	if err != nil {
+		return &models.Result{
+			Name: name,
+		}
+	}
+
+	var (
+		country      string
+		checkResults []models.CheckResult
+		urlResults   map[string]bool
+		delay        uint16
+	)
+	var wg sync.WaitGroup
+	countryCh := make(chan string, 1)
+	checkCh := make(chan []models.CheckResult, 1)
+	urlCh := make(chan map[string]bool, 1)
+	delayCh := make(chan uint16, 1)
+
+	if bandwidth > 0 || ttfb > 0 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			countryR := checkProxy(ctx, proxy, []models.CheckType{models.CheckTypeCountry})
+			if len(countryR) > 0 {
+				countryCh <- countryR[0].Value
+			} else {
+				countryCh <- ""
+			}
+		}()
+		//
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			checkCh <- checkProxy(ctx, proxy, checkTypes)
+		}()
+		//
+		if URLForTest != nil {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				urlCh <- TestURLAvailable(URLForTest, proxy, timeout)
+			}()
+		}
+		//
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			delayCh <- s.testDelay()
+		}()
+	}
+	go func() {
+		wg.Wait()
+		close(countryCh)
+		close(checkCh)
+		close(urlCh)
+		close(delayCh)
+	}()
+	for c := range countryCh {
+		country = c
+	}
+	for cr := range checkCh {
+		checkResults = cr
+	}
+	for ur := range urlCh {
+		urlResults = ur
+	}
+	for d := range delayCh {
+		delay = d
 	}
 
 	result := &models.Result{
-		Name:      name,
-		Bandwidth: float64(downloaded) / downloadTime.Seconds(),
-		TTFB:      t,
-		Delay:     delay,
+		Name:         name,
+		Bandwidth:    bandwidth,
+		TTFB:         ttfb,
+		Delay:        delay,
+		Country:      country,
+		CheckResults: checkResults,
+		URLForTest:   urlResults,
 	}
 
 	return result
 }
 
-func TestProxyConcurrent(name string, proxy C.Proxy, option *models.Options) *models.Result {
+func TestProxy(ctx context.Context, name string, proxy C.Proxy, option *models.Options) *models.Result {
 	p := newProxyTest(name, proxy, option)
-	return p.concurrentTest()
+	return p.Test(ctx)
 }
 
 func writeNodeConfigurationToYAML(filePath string, results []models.Result, proxies map[string]models.CProxy) error {

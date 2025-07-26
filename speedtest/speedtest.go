@@ -16,6 +16,7 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -234,7 +235,7 @@ func (t *Test) loadProxies(buf []byte, proxyUrl *url.URL) {
 func (t *Test) TestSpeed(ctx context.Context) ([]models.CProxyWithResult, error) {
 	t.ReadProxies(t.options.ConfigPath, t.proxyUrl)
 	var (
-		maxConcurrency = 10 // todo: get cpu num
+		maxConcurrency = runtime.NumCPU()
 		resultsCh      = make(chan *models.CProxyWithResult, 10)
 	)
 	// 启动测速 worker
@@ -254,7 +255,7 @@ func (t *Test) TestSpeed(ctx context.Context) ([]models.CProxyWithResult, error)
 					<-sem
 					wg.Done()
 				}()
-				result, err := testspeed(p, t.options)
+				result, err := testspeed(ctx, p, t.options)
 				if err != nil {
 					log.Errorln("[%s] test speed err: %v", p.Name(), err)
 				}

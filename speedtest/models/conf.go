@@ -21,7 +21,7 @@ type CProxyWithResult struct {
 
 type Result struct {
 	Name         string          `json:"name"`
-	Bandwidth    float64         `json:"bandwidth"`
+	Bandwidth    float64         `json:"bandwidth"` // 带宽，单位为 Kbps
 	TTFB         time.Duration   `json:"TTFB"`
 	Delay        uint16          `json:"delay"`
 	Country      string          `json:"country"`

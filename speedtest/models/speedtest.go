@@ -24,7 +24,6 @@ type Options struct {
 	NameRegexContain    string        `json:"name_regex_contain"`     // 通过名字过滤代理，只测试过滤部分，格式为正则，默认全部测
 	NameRegexNonContain string        `json:"name_regex_not_contain"` // 通过名字过滤代理，跳过过滤部分，格式为正则
 	SortField           SortField     `json:"sort_field"`             // 排序方式，b 带宽 t 延迟
-	Concurrent          int           `json:"concurrent"`             // 测速时候的下载并发数
 	URLForTest          []string      `json:"url_for_test"`           // 测试 URL 是否可访问
 	ProxyUrl            string        `json:"proxy_url"`              // ConfigPath 为网络链接时可使用指定代理下载
 	CheckTypes          []CheckType   `json:"check_types"`            // 检查节点可解锁的类型, 可用值请参考 CheckType
