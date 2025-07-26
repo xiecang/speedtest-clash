@@ -274,7 +274,8 @@ func (t *Test) TestSpeed(ctx context.Context) ([]models.CProxyWithResult, error)
 			return nil, fmt.Errorf("context.Canceled: %v", ctx.Err())
 		case err, ok := <-t.errCh:
 			if ok {
-				return nil, fmt.Errorf("read proxies err: %v", err)
+				log.Errorln("load proxies err: %s", err)
+				continue
 			}
 		case result, ok := <-resultsCh:
 			if !ok {
