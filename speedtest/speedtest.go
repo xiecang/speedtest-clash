@@ -259,7 +259,7 @@ func (t *Test) TestSpeed(ctx context.Context) ([]models.CProxyWithResult, error)
 		close(t.errCh)
 	}()
 	var (
-		maxConcurrency = cpuCount * 3
+		maxConcurrency = t.options.Concurrent
 		resultsCh      = make(chan *models.CProxyWithResult, 10)
 	)
 	// 启动测速 worker
@@ -270,8 +270,8 @@ func (t *Test) TestSpeed(ctx context.Context) ([]models.CProxyWithResult, error)
 		)
 		for proxy := range t.proxiesCh {
 			atomic.AddInt32(t.count, 1)
-			t.barIncrement()
 			if !t.proxyShouldKeep(proxy) {
+				t.barIncrement()
 				continue
 			}
 			sem <- struct{}{}
@@ -286,6 +286,7 @@ func (t *Test) TestSpeed(ctx context.Context) ([]models.CProxyWithResult, error)
 					log.Errorln("[%s] test speed err: %v", p.Name(), err)
 				}
 				resultsCh <- result
+				t.barIncrement()
 			}(proxy)
 		}
 		wg.Wait()
@@ -452,6 +453,9 @@ func checkOptions(options *models.Options) (bool, string) {
 	}
 	if options.LivenessAddr == "" {
 		options.LivenessAddr = models.DefaultLivenessAddr
+	}
+	if options.Concurrent == 0 {
+		options.Concurrent = cpuCount * 3
 	}
 
 	return true, ""

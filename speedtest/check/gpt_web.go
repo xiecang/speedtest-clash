@@ -8,15 +8,10 @@ import (
 	"github.com/xiecang/speedtest-clash/speedtest/requests"
 	"net/http"
 	"strings"
-	"time"
 )
 
 const (
 	GPTTrace = "https://chat.openai.com/cdn-cgi/trace"
-
-	timeout      = 30 * time.Second
-	retryTimes   = 3
-	retryTimeOut = 3 * time.Second
 )
 
 var gptSupportCountry = map[string]bool{

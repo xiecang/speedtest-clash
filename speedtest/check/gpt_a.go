@@ -25,7 +25,7 @@ func requestChatGPT(ctx context.Context, client *http.Client, url string) (bool,
 			"User-Agent":   convert.RandUserAgent(),
 		},
 		Timeout:      timeout,
-		RetryTimes:   3,
+		RetryTimes:   1,
 		RetryTimeOut: 3 * time.Second,
 		Client:       client,
 	})

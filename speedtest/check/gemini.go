@@ -28,7 +28,7 @@ func (g geminiChecker) Check(ctx context.Context, proxy C.Proxy) (result models.
 		Method:       http.MethodGet,
 		URL:          "https://gemini.google.com/",
 		Timeout:      timeout,
-		RetryTimes:   2,
+		RetryTimes:   retryTimes,
 		RetryTimeOut: retryTimeOut,
 		Client:       client,
 		Headers: map[string]string{

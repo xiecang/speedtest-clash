@@ -27,6 +27,7 @@ type Options struct {
 	URLForTest          []string      `json:"url_for_test"`           // 测试 URL 是否可访问
 	ProxyUrl            string        `json:"proxy_url"`              // ConfigPath 为网络链接时可使用指定代理下载
 	CheckTypes          []CheckType   `json:"check_types"`            // 检查节点可解锁的类型, 可用值请参考 CheckType
+	Concurrent          int           `json:"concurrent"`             // 测速的并发数，默认 CPU 数量*3
 }
 
 type CProxy struct {

@@ -24,7 +24,7 @@ func (n netflixChecker) Check(ctx context.Context, proxy C.Proxy) (result models
 		Method:       http.MethodGet,
 		URL:          "https://www.netflix.com/sg/title/81498621",
 		Timeout:      timeout,
-		RetryTimes:   2,
+		RetryTimes:   retryTimes,
 		RetryTimeOut: retryTimeOut,
 		Client:       client,
 		Headers: map[string]string{
