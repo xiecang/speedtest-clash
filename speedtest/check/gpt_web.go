@@ -14,7 +14,7 @@ import (
 const (
 	GPTTrace = "https://chat.openai.com/cdn-cgi/trace"
 
-	timeout      = 60 * time.Second
+	timeout      = 30 * time.Second
 	retryTimes   = 3
 	retryTimeOut = 3 * time.Second
 )

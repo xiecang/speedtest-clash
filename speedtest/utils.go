@@ -314,7 +314,7 @@ func TestProxy(ctx context.Context, name string, proxy C.Proxy, option *models.O
 	return p.Test(ctx)
 }
 
-func writeNodeConfigurationToYAML(filePath string, results []models.Result, proxies map[string]models.CProxy) error {
+func writeNodeConfigurationToYAML(filePath string, results []models.CProxyWithResult) error {
 	fp, err := os.Create(filePath)
 	if err != nil {
 		return err
@@ -323,14 +323,12 @@ func writeNodeConfigurationToYAML(filePath string, results []models.Result, prox
 		_ = fp.Close()
 	}(fp)
 
-	var sortedProxies []any
+	var proxies []any
 	for _, result := range results {
-		if v, ok := proxies[result.Name]; ok {
-			sortedProxies = append(sortedProxies, v.SecretConfig)
-		}
+		proxies = append(proxies, result.Proxy.SecretConfig)
 	}
 
-	bytes, err := yaml.Marshal(sortedProxies)
+	bytes, err := yaml.Marshal(proxies)
 	if err != nil {
 		return err
 	}
@@ -339,7 +337,7 @@ func writeNodeConfigurationToYAML(filePath string, results []models.Result, prox
 	return err
 }
 
-func writeToCSV(filePath string, results []models.Result) error {
+func writeToCSV(filePath string, results []models.CProxyWithResult) error {
 	csvFile, err := os.Create(filePath)
 	if err != nil {
 		return err
@@ -357,7 +355,7 @@ func writeToCSV(filePath string, results []models.Result) error {
 	for _, result := range results {
 		line := []string{
 			result.Name,
-			fmt.Sprintf("%.2f", result.Bandwidth/1024/1024),
+			fmt.Sprintf("%.2f", result.Bandwidth/1024),
 			strconv.FormatInt(result.TTFB.Milliseconds(), 10),
 		}
 		err = csvWriter.Write(line)

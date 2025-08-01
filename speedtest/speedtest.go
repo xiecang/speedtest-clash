@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/cheggaaa/pb/v3"
 	"github.com/metacubex/mihomo/adapter"
 	"github.com/metacubex/mihomo/adapter/provider"
 	"github.com/metacubex/mihomo/common/convert"
@@ -20,11 +21,15 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"text/tabwriter"
 	"time"
 )
 
 var (
 	ErrSpeedNotTest = errors.New("请先测速")
+	ErrSpeedNoAlive = errors.New("无健康节点")
+	cpuCount        = runtime.NumCPU()
 )
 
 type Test struct {
@@ -40,6 +45,24 @@ type Test struct {
 
 	proxiesCh chan models.CProxy
 	errCh     chan error
+	//
+	totalCount   *int32 // 计数器，记录总节点数量
+	count        *int32 // 计数器，记录已测速的节点数量
+	invalidCount *int32 // 计数器，记录无效节点数量
+	//
+	bar *pb.ProgressBar // 进度条
+}
+
+func (t *Test) barIncrement() {
+	if t.bar != nil {
+		t.bar.Increment()
+	}
+}
+
+func (t *Test) barFinish() {
+	if t.bar != nil {
+		t.bar.Finish()
+	}
 }
 
 func sortResult(results []models.Result, sortField models.SortField) ([]models.Result, error) {
@@ -135,13 +158,14 @@ func (t *Test) ReadProxies(ctx context.Context, wg *sync.WaitGroup, configPathCo
 			var err error
 			if strings.HasPrefix(configPath, "http") {
 				resp, err := requests.Request(ctx, &requests.RequestOption{
-					Method:       http.MethodGet,
-					URL:          configPath,
-					Headers:      map[string]string{"User-Agent": "clash-meta"},
-					Timeout:      60 * time.Second,
-					RetryTimes:   3,
-					RetryTimeOut: 3 * time.Second,
-					ProxyUrl:     proxyUrl,
+					Method:             http.MethodGet,
+					URL:                configPath,
+					Headers:            map[string]string{"User-Agent": "clash-meta"},
+					Timeout:            20 * time.Second,
+					RetryTimes:         3,
+					RetryTimeOut:       3 * time.Second,
+					ProxyUrl:           proxyUrl,
+					InsecureSkipVerify: true,
 				})
 				if err != nil {
 					log.Warnln("failed to fetch config: %s, err: %s", configPath, err)
@@ -193,10 +217,18 @@ func (t *Test) loadProxies(ctx context.Context, wg *sync.WaitGroup, buf []byte, 
 	}
 	proxiesConfig := rawCfg.Proxies
 	providersConfig := rawCfg.Providers
+	atomic.AddInt32(t.totalCount, int32(len(proxiesConfig)))
+	if t.bar == nil {
+		t.bar = pb.StartNew(int(atomic.LoadInt32(t.totalCount)))
+	} else {
+		t.bar.SetTotal(int64(atomic.LoadInt32(t.totalCount)))
+	}
 
 	for i, config := range proxiesConfig {
 		proxy, err := adapter.ParseProxy(config)
 		if err != nil {
+			atomic.AddInt32(t.invalidCount, 1)
+			t.barIncrement()
 			log.Warnln("ParseProxy error: proxy %d: %s", i, err)
 			continue
 		}
@@ -213,9 +245,6 @@ func (t *Test) loadProxies(ctx context.Context, wg *sync.WaitGroup, buf []byte, 
 				return
 			}
 			t.ReadProxies(ctx, wg, config.Url, proxyUrl)
-			//for _, proxy := range proxiesFromProvider {
-			//	proxiesCh <- proxy
-			//}
 		}(name, config)
 	}
 
@@ -230,7 +259,7 @@ func (t *Test) TestSpeed(ctx context.Context) ([]models.CProxyWithResult, error)
 		close(t.errCh)
 	}()
 	var (
-		maxConcurrency = runtime.NumCPU() * 10
+		maxConcurrency = cpuCount * 3
 		resultsCh      = make(chan *models.CProxyWithResult, 10)
 	)
 	// 启动测速 worker
@@ -240,6 +269,8 @@ func (t *Test) TestSpeed(ctx context.Context) ([]models.CProxyWithResult, error)
 			sem = make(chan struct{}, maxConcurrency)
 		)
 		for proxy := range t.proxiesCh {
+			atomic.AddInt32(t.count, 1)
+			t.barIncrement()
 			if !t.proxyShouldKeep(proxy) {
 				continue
 			}
@@ -259,6 +290,7 @@ func (t *Test) TestSpeed(ctx context.Context) ([]models.CProxyWithResult, error)
 		}
 		wg.Wait()
 		close(resultsCh)
+		t.barFinish()
 	}()
 
 	var results []models.CProxyWithResult
@@ -289,58 +321,76 @@ func (t *Test) TestSpeed(ctx context.Context) ([]models.CProxyWithResult, error)
 	}
 }
 
-//func (t *Test) logResults(results []models.CProxyWithResult) {
-//	var format = "%s%-42s\t%-12s\t%-12s\t%-12s\t%-12s\t%-12s\t%-12s\033[0m\n"
-//	fmt.Printf(format, "", "节点", "带宽", "延迟", "GPT Android", "GPT IOS", "GPT WEB", "Delay")
-//	for _, result := range results {
-//		result.Printf(format)
-//	}
-//}
-
-//func (t *Test) LogResults() {
-//	t.logResults(t.results)
-//}
-
-func (t *Test) LogNum() {
-	log.Infoln("总共 %d 个节点，可访问 %d 个", len(t.results), len(t.aliveProxies))
+func (t *Test) TotalCount() int32 {
+	return atomic.LoadInt32(t.totalCount)
 }
 
-//func (t *Test) LogAlive() {
-//	var rs []models.Result
-//	for _, result := range t.results {
-//		if result.Alive() {
-//			rs = append(rs, result)
-//		}
-//	}
-//	t.logResults(rs)
-//}
+func (t *Test) InvalidCount() int32 {
+	return atomic.LoadInt32(t.invalidCount)
+}
 
-//func (t *Test) WriteToYaml(names ...string) error {
-//	if !t._testedSpeed {
-//		return ErrSpeedNotTest
-//	}
-//	var name string
-//	if len(names) > 0 {
-//		name = names[0]
-//	} else {
-//		name = "result.yaml"
-//	}
-//	return writeNodeConfigurationToYAML(name, t.results, t.proxies)
-//}
-//
-//func (t *Test) WriteToCsv(names ...string) error {
-//	if !t._testedSpeed {
-//		return ErrSpeedNotTest
-//	}
-//
-//	var name string
-//	if len(names) > 0 {
-//		name = names[0]
-//	} else {
-//		name = "result.csv"
-//	}
-//	return writeToCSV(name, t.results)
-//}
+// ProcessCount 返回已处理的节点数量
+func (t *Test) ProcessCount() int32 {
+	return atomic.LoadInt32(t.count) + t.InvalidCount()
+}
+
+func (t *Test) LogNum() {
+	log.Infoln(
+		"总共 %d 个节点，无效节点 %d 个，可访问 %d 个",
+		atomic.LoadInt32(t.totalCount),
+		atomic.LoadInt32(t.invalidCount),
+		len(t.aliveProxies),
+	)
+}
+
+func (t *Test) LogAlive() {
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "Name\t节点\t带宽\t延迟\t链接测试\t其它")
+	for _, result := range t.aliveProxies {
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n",
+			result.Name,
+			result.Proxy.Addr(),
+			result.FormattedBandwidth(),
+			result.FormattedTTFB(),
+			result.FormattedCheckResult(),
+			result.FormattedUrlCheck(),
+		)
+	}
+	_ = w.Flush()
+}
+
+func (t *Test) WriteToYaml(names ...string) error {
+	if !t._testedSpeed {
+		return ErrSpeedNotTest
+	}
+	if len(t.aliveProxies) == 0 {
+		return ErrSpeedNoAlive
+	}
+	var name string
+	if len(names) > 0 {
+		name = names[0]
+	} else {
+		name = "result.yaml"
+	}
+	return writeNodeConfigurationToYAML(name, t.aliveProxies)
+}
+
+func (t *Test) WriteToCsv(names ...string) error {
+	if !t._testedSpeed {
+		return ErrSpeedNotTest
+	}
+	if len(t.aliveProxies) == 0 {
+		return ErrSpeedNoAlive
+	}
+
+	var name string
+	if len(names) > 0 {
+		name = names[0]
+	} else {
+		name = "result.csv"
+	}
+	return writeToCSV(name, t.aliveProxies)
+}
 
 // AliveProxiesWithResult 可访问的节点以及结果
 func (t *Test) AliveProxiesWithResult() ([]models.CProxyWithResult, error) {
@@ -420,9 +470,12 @@ func NewTest(options models.Options) (*Test, error) {
 	}
 
 	return &Test{
-		options:   &options,
-		proxyUrl:  proxyUrl,
-		proxiesCh: make(chan models.CProxy, 10),
-		errCh:     make(chan error, 1),
+		options:      &options,
+		proxyUrl:     proxyUrl,
+		proxiesCh:    make(chan models.CProxy, cpuCount*10),
+		errCh:        make(chan error, 1),
+		totalCount:   new(int32),
+		count:        new(int32),
+		invalidCount: new(int32),
 	}, nil
 }

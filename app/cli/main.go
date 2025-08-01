@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"github.com/phuslu/log"
 	"github.com/xiecang/speedtest-clash/speedtest"
@@ -17,7 +18,6 @@ var (
 	timeoutConfig      = flag.Duration("timeout", time.Second*5, "timeout for testing proxies")
 	sortField          = flag.String("sort", "b", "sort field for testing proxies, b for bandwidth, t for TTFB")
 	output             = flag.String("output", "", "output result to csv/yaml file")
-	concurrent         = flag.Int("concurrent", 4, "download concurrent size")
 )
 
 func main() {
@@ -34,14 +34,13 @@ func main() {
 		ConfigPath:       *configPathConfig,
 		NameRegexContain: *filterRegexConfig,
 		SortField:        models.SortField(*sortField),
-		Concurrent:       *concurrent,
 	}
 
 	var t, err = speedtest.NewTest(options)
 	if err != nil {
 		log.Fatal().Msgf("%v", err)
 	}
-	_, err = t.TestSpeed()
+	_, err = t.TestSpeed(context.Background())
 	if err != nil {
 		log.Fatal().Msgf("%v", err)
 	}
