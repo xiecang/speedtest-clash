@@ -420,6 +420,15 @@ func (t *Test) AliveProxiesWithResult() ([]models.CProxyWithResult, error) {
 	return t.aliveProxies, nil
 }
 
+// ProxiesWithResult 合法的节点以及结果
+func (t *Test) ProxiesWithResult() ([]models.CProxyWithResult, error) {
+	if !t._testedSpeed {
+		_, _ = t.TestSpeed(context.Background())
+	}
+
+	return t.results, nil
+}
+
 //func (t *Test) Proxies() map[string]models.CProxy {
 //	return t.proxies
 //}
@@ -427,6 +436,19 @@ func (t *Test) AliveProxiesWithResult() ([]models.CProxyWithResult, error) {
 // AliveProxiesToJson 可访问的节点, 返回 JSON string
 func (t *Test) AliveProxiesToJson() ([]byte, error) {
 	ps, err := t.AliveProxies()
+	if err != nil {
+		return nil, err
+	}
+	data, err := json.Marshal(ps)
+	if err != nil {
+		return nil, err
+	}
+	return data, nil
+}
+
+// ProxiesToJson 可访问的节点, 返回 JSON string
+func (t *Test) ProxiesToJson() ([]byte, error) {
+	ps, err := t.Proxies()
 	if err != nil {
 		return nil, err
 	}
@@ -451,6 +473,24 @@ func (t *Test) AliveProxies() ([]map[string]interface{}, error) {
 		d["_check"] = proxy.CheckResults
 		ps = append(ps, d)
 
+	}
+
+	return ps, nil
+}
+
+// Proxies 合法的节点
+func (t *Test) Proxies() ([]map[string]interface{}, error) {
+	if !t._testedSpeed {
+		_, _ = t.TestSpeed(context.Background())
+	}
+	var (
+		ps []map[string]any
+	)
+
+	for _, proxy := range t.results {
+		d := proxy.Proxy.SecretConfig
+		d["_check"] = proxy.CheckResults
+		ps = append(ps, d)
 	}
 
 	return ps, nil
