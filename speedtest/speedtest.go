@@ -266,20 +266,17 @@ func (t *Test) loadProxies(ctx context.Context, wg *sync.WaitGroup, buf []byte, 
 func (t *Test) TestSpeed(ctx context.Context) ([]models.CProxyWithResult, error) {
 	var wg sync.WaitGroup
 	t.ReadProxies(ctx, &wg, t.options.ConfigPath, t.proxyUrl)
-	go func() {
-		wg.Wait()
-		close(t.proxiesCh)
-		close(t.errCh)
-	}()
+
 	var (
 		maxConcurrency = t.options.Concurrent
 		resultsCh      = make(chan *models.CProxyWithResult, 10)
 	)
+
 	// 启动测速 worker
 	go func() {
 		var (
-			wg  sync.WaitGroup
-			sem = make(chan struct{}, maxConcurrency)
+			workerWg sync.WaitGroup
+			sem      = make(chan struct{}, maxConcurrency)
 		)
 		for proxy := range t.proxiesCh {
 			atomic.AddInt32(t.count, 1)
@@ -288,12 +285,12 @@ func (t *Test) TestSpeed(ctx context.Context) ([]models.CProxyWithResult, error)
 				continue
 			}
 			sem <- struct{}{}
-			wg.Add(1)
+			workerWg.Add(1)
 			go func(p models.CProxy) {
 				defer func() {
-					<-sem
-					wg.Done()
+					workerWg.Done()
 					t.barIncrement()
+					<-sem
 				}()
 				result, err := testspeed(ctx, p, t.options)
 				if err != nil {
@@ -302,9 +299,15 @@ func (t *Test) TestSpeed(ctx context.Context) ([]models.CProxyWithResult, error)
 				resultsCh <- result
 			}(proxy)
 		}
-		wg.Wait()
-		close(resultsCh)
+		workerWg.Wait()
 		t.barFinish()
+		close(resultsCh)
+	}()
+
+	go func() {
+		wg.Wait()
+		close(t.proxiesCh)
+		close(t.errCh)
 	}()
 
 	var results []models.CProxyWithResult
