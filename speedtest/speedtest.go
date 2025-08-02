@@ -205,9 +205,17 @@ func (t *Test) loadProxies(ctx context.Context, wg *sync.WaitGroup, buf []byte, 
 			t.errCh <- err
 			return
 		}
+		atomic.AddInt32(t.totalCount, int32(len(proxyList)))
+		if t.bar == nil {
+			t.bar = pb.StartNew(int(atomic.LoadInt32(t.totalCount)))
+		} else {
+			t.bar.SetTotal(int64(atomic.LoadInt32(t.totalCount)))
+		}
 		for _, p := range proxyList {
 			proxy, err := adapter.ParseProxy(p)
 			if err != nil {
+				atomic.AddInt32(t.invalidCount, 1)
+				t.barIncrement()
 				log.Warnln("ParseProxy error: proxy %s", err)
 				continue
 			}
