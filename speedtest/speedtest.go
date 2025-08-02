@@ -1,6 +1,7 @@
 package speedtest
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -198,7 +199,7 @@ func (t *Test) loadProxies(ctx context.Context, wg *sync.WaitGroup, buf []byte, 
 	rawCfg := &models.RawConfig{
 		Proxies: []map[string]any{},
 	}
-	if err := yaml.Unmarshal(buf, rawCfg); err != nil {
+	if !bytes.Contains(buf, []byte("server")) {
 		proxyList, err := convert.ConvertsV2Ray(buf)
 		if err != nil {
 			t.errCh <- err
@@ -213,6 +214,10 @@ func (t *Test) loadProxies(ctx context.Context, wg *sync.WaitGroup, buf []byte, 
 
 			t.proxiesCh <- models.CProxy{Proxy: proxy, SecretConfig: p}
 		}
+		return
+	}
+	if err := yaml.Unmarshal(buf, rawCfg); err != nil {
+		t.errCh <- err
 		return
 	}
 	proxiesConfig := rawCfg.Proxies
