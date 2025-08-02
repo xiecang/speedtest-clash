@@ -83,8 +83,8 @@ func (s *proxyTest) testBandwidth(ctx context.Context, downloadSize int) (time.D
 	if err != nil {
 		return 0, 0, fmt.Errorf("create request failed, err: %v", err)
 	}
-	start := time.Now()
 	req.Header.Set("User-Agent", convert.RandUserAgent())
+	start := time.Now()
 	resp, err := client.Do(req)
 	if err != nil {
 		return 0, 0, fmt.Errorf("connect test domain failed, err: %v", err)
@@ -238,63 +238,56 @@ func (s *proxyTest) Test(ctx context.Context) *models.Result {
 			Name: name,
 		}
 	}
+	ttfb, bandwidth, err := s.testBandwidth(ctx, chunkSize)
+	if err != nil {
+		return &models.Result{Name: name}
+	}
 
 	var (
 		country      string
 		checkResults []models.CheckResult
 		urlResults   map[string]bool
 		delay        uint16
-		ttfb         time.Duration
-		bandwidth    float64
 	)
 	var wg sync.WaitGroup
 	countryCh := make(chan string, 1)
 	checkCh := make(chan []models.CheckResult, 1)
 	urlCh := make(chan map[string]bool, 1)
 	delayCh := make(chan uint16, 1)
-	ttfbCh := make(chan time.Duration, 1)
-	bandwidthCh := make(chan float64, 1)
 
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		t, b, err := s.testBandwidth(ctx, chunkSize)
-		if err == nil {
-			ttfbCh <- t
-			bandwidthCh <- b
-		}
-	}()
-	//
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		countryR := checkProxy(ctx, proxy, []models.CheckType{models.CheckTypeCountry})
-		if len(countryR) > 0 {
-			countryCh <- countryR[0].Value
-		} else {
-			countryCh <- ""
-		}
-	}()
-	//
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		checkCh <- checkProxy(ctx, proxy, checkTypes)
-	}()
-	//
-	if URLForTest != nil {
+	if ttfb > 0 && bandwidth > 0 {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			urlCh <- s.testURLAvailable(ctx, URLForTest)
+			countryR := checkProxy(ctx, proxy, []models.CheckType{models.CheckTypeCountry})
+			if len(countryR) > 0 {
+				countryCh <- countryR[0].Value
+			} else {
+				countryCh <- ""
+			}
 		}()
+		//
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			checkCh <- checkProxy(ctx, proxy, checkTypes)
+		}()
+		//
+		if URLForTest != nil {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				urlCh <- s.testURLAvailable(ctx, URLForTest)
+			}()
+		}
+		//
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			delayCh <- s.testDelay(ctx)
+		}()
+
 	}
-	//
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		delayCh <- s.testDelay(ctx)
-	}()
 
 	go func() {
 		wg.Wait()
@@ -302,8 +295,6 @@ func (s *proxyTest) Test(ctx context.Context) *models.Result {
 		close(checkCh)
 		close(urlCh)
 		close(delayCh)
-		close(ttfbCh)
-		close(bandwidthCh)
 	}()
 	for c := range countryCh {
 		country = c
@@ -316,12 +307,6 @@ func (s *proxyTest) Test(ctx context.Context) *models.Result {
 	}
 	for d := range delayCh {
 		delay = d
-	}
-	for t := range ttfbCh {
-		ttfb = t
-	}
-	for b := range bandwidthCh {
-		bandwidth = b
 	}
 
 	if country == "" {
