@@ -2,12 +2,14 @@ package speedtest
 
 import (
 	"context"
+	"errors"
 	"github.com/metacubex/mihomo/common/convert"
 	"github.com/metacubex/mihomo/common/utils"
 	C "github.com/metacubex/mihomo/constant"
 	"github.com/xiecang/speedtest-clash/speedtest/models"
 	"github.com/xiecang/speedtest-clash/speedtest/requests"
 	"gopkg.in/yaml.v3"
+	"net"
 	"sync"
 
 	"encoding/csv"
@@ -22,40 +24,6 @@ import (
 var (
 	delayTestUrl = "https://cp.cloudflare.com/generate_204"
 )
-
-func TestURLAvailable(urls []string, proxy C.Proxy, timeout time.Duration) map[string]bool {
-	if len(urls) == 0 {
-		return nil
-	}
-	var res = sync.Map{}
-	wg := sync.WaitGroup{}
-	wg.Add(len(urls))
-
-	for _, url := range urls {
-
-		go func(url string) {
-			defer wg.Done()
-			client := requests.GetClient(proxy, timeout)
-			resp, err := client.Get(url)
-			if err != nil {
-				res.Store(url, false)
-				return
-			}
-			if resp.StatusCode-http.StatusOK > 200 {
-				res.Store(url, false)
-				return
-			}
-			res.Store(url, true)
-		}(url)
-	}
-	wg.Wait()
-	var result = make(map[string]bool)
-	res.Range(func(key, value interface{}) bool {
-		result[key.(string)] = value.(bool)
-		return true
-	})
-	return result
-}
 
 func testspeed(ctx context.Context, proxy models.CProxy, options *models.Options) (*models.CProxyWithResult, error) {
 	var name = proxy.Name()
@@ -86,52 +54,6 @@ func testspeed(ctx context.Context, proxy models.CProxy, options *models.Options
 	}
 	return nil, err
 }
-
-//func TestSpeed(proxies map[string]models.CProxy, options *models.Options) ([]models.Result, error) {
-//	results := make([]models.Result, 0, len(proxies))
-//	var err error
-//
-//	var wg = sync.WaitGroup{}
-//	for name, proxy := range proxies {
-//		wg.Add(1)
-//		go func(name string, proxy models.CProxy) {
-//			defer wg.Done()
-//
-//			// get from cache
-//			if cache := getCacheFromResult(name); cache != nil {
-//				results = append(results, *cache)
-//				return
-//			}
-//
-//			var tp = proxy.Type()
-//			switch tp {
-//			case C.Shadowsocks, C.ShadowsocksR, C.Snell, C.Socks5, C.Http, C.Vmess, C.Vless, C.Trojan, C.Hysteria, C.Hysteria2, C.WireGuard, C.Tuic:
-//				result := TestProxy(name, proxy, options)
-//				if result.Alive() {
-//					countryR := checkProxy(context.Background(), proxy, []models.CheckType{models.CheckTypeCountry})
-//					if len(countryR) > 0 {
-//						result.Country = countryR[0].Value
-//					}
-//					result.CheckResults = checkProxy(context.Background(), proxy, options.CheckTypes)
-//
-//					if options.URLForTest != nil {
-//						result.URLForTest = TestURLAvailable(options.URLForTest, proxy, options.Timeout)
-//					}
-//				}
-//				results = append(results, *result)
-//
-//				// add cache
-//				addResultCache(result)
-//			case C.Direct, C.Reject, C.Relay, C.Selector, C.Fallback, C.URLTest, C.LoadBalance:
-//				return
-//			default:
-//				err = fmt.Errorf("unsupported proxy type: %s", tp)
-//			}
-//		}(name, proxy)
-//	}
-//	wg.Wait()
-//	return results, err
-//}
 
 type proxyTest struct {
 	name   string
@@ -183,35 +105,121 @@ func (s *proxyTest) testBandwidth(ctx context.Context, downloadSize int) (time.D
 	return ttfb, bandwidth, nil
 }
 
-func (s *proxyTest) testDelay() uint16 {
-	const tryCount = 3
-	results := make(chan uint16, tryCount)
+type urlResult struct {
+	url   string
+	delay uint16
+	err   error
+	ok    bool
+}
+
+func (s *proxyTest) testURL(ctx context.Context, url string, tryCount int) *urlResult {
+	results := make(chan urlResult, tryCount)
 	var wg sync.WaitGroup
 
 	for i := 0; i < tryCount; i++ {
 		wg.Add(1)
-		go func() {
+		go func(ctx context.Context, url string) {
 			defer wg.Done()
 			//	200,204
-			expectedStatus, _ := utils.NewUnsignedRanges[uint16]("200,204")
-			d, _ := s.proxy.URLTest(context.Background(), delayTestUrl, expectedStatus)
-			results <- d
-		}()
+			expectedStatus, err := utils.NewUnsignedRanges[uint16]("200,204")
+			if err != nil {
+				results <- urlResult{url: url, delay: 0, err: err, ok: false}
+				return
+			}
+			d, err := s.proxy.URLTest(ctx, url, expectedStatus)
+			results <- urlResult{
+				url:   url,
+				delay: d,
+				err:   err,
+				ok:    err == nil && d > 0,
+			}
+		}(ctx, url)
 	}
 
 	wg.Wait()
 	close(results)
 
 	m := uint16(0xFFFF)
-	for d := range results {
+	var (
+		err1 = fmt.Errorf("failed")
+		err  = err1
+		ok   bool
+	)
+	for r := range results {
+		if r.err == nil {
+			err = nil
+		} else if errors.Is(err, err1) {
+			err = r.err
+		}
+		if r.ok {
+			ok = true
+		}
+		d := r.delay
 		if d > 0 && d < m {
 			m = d
 		}
 	}
-	if m == 0xFFFF {
-		return 0
+	if m == 0xFFFF || err != nil {
+		return &urlResult{
+			url:   url,
+			delay: 0,
+			err:   err,
+			ok:    ok,
+		}
+	} else {
+		err = nil
 	}
-	return m
+	return &urlResult{
+		url:   url,
+		delay: m,
+		err:   err,
+		ok:    ok,
+	}
+}
+
+func (s *proxyTest) testDelay(ctx context.Context) uint16 {
+	r := s.testURL(ctx, delayTestUrl, 3)
+	return r.delay
+}
+
+func (s *proxyTest) testURLAvailable(ctx context.Context, urls []string) map[string]bool {
+	if len(urls) == 0 {
+		return nil
+	}
+	var wg sync.WaitGroup
+
+	results := make(chan *urlResult, len(urls))
+	wg.Add(len(urls))
+	for _, url := range urls {
+		go func(url string) {
+			defer wg.Done()
+			results <- s.testURL(ctx, url, 3)
+		}(url)
+	}
+
+	wg.Wait()
+	close(results)
+
+	urlResults := make(map[string]bool)
+	for r := range results {
+		urlResults[r.url] = r.ok
+	}
+	return urlResults
+}
+
+func (s *proxyTest) isReachable() bool {
+	var (
+		address = s.proxy.Addr()
+		timeout = 2 * time.Second
+	)
+	conn, err := net.DialTimeout("tcp", address, timeout)
+	if err != nil {
+		return false
+	}
+	defer func(conn net.Conn) {
+		_ = conn.Close()
+	}(conn)
+	return true
 }
 
 func (s *proxyTest) Test(ctx context.Context) *models.Result {
@@ -222,11 +230,10 @@ func (s *proxyTest) Test(ctx context.Context) *models.Result {
 		chunkSize  = option.DownloadSize
 		checkTypes = option.CheckTypes
 		URLForTest = option.URLForTest
-		timeout    = option.Timeout
 	)
 
-	ttfb, bandwidth, err := s.testBandwidth(ctx, chunkSize)
-	if err != nil {
+	reachable := s.isReachable()
+	if !reachable {
 		return &models.Result{
 			Name: name,
 		}
@@ -237,51 +244,66 @@ func (s *proxyTest) Test(ctx context.Context) *models.Result {
 		checkResults []models.CheckResult
 		urlResults   map[string]bool
 		delay        uint16
+		ttfb         time.Duration
+		bandwidth    float64
 	)
 	var wg sync.WaitGroup
 	countryCh := make(chan string, 1)
 	checkCh := make(chan []models.CheckResult, 1)
 	urlCh := make(chan map[string]bool, 1)
 	delayCh := make(chan uint16, 1)
+	ttfbCh := make(chan time.Duration, 1)
+	bandwidthCh := make(chan float64, 1)
 
-	if bandwidth > 0 || ttfb > 0 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			countryR := checkProxy(ctx, proxy, []models.CheckType{models.CheckTypeCountry})
-			if len(countryR) > 0 {
-				countryCh <- countryR[0].Value
-			} else {
-				countryCh <- ""
-			}
-		}()
-		//
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			checkCh <- checkProxy(ctx, proxy, checkTypes)
-		}()
-		//
-		if URLForTest != nil {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				urlCh <- TestURLAvailable(URLForTest, proxy, timeout)
-			}()
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		t, b, err := s.testBandwidth(ctx, chunkSize)
+		if err == nil {
+			ttfbCh <- t
+			bandwidthCh <- b
 		}
-		//
+	}()
+	//
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		countryR := checkProxy(ctx, proxy, []models.CheckType{models.CheckTypeCountry})
+		if len(countryR) > 0 {
+			countryCh <- countryR[0].Value
+		} else {
+			countryCh <- ""
+		}
+	}()
+	//
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		checkCh <- checkProxy(ctx, proxy, checkTypes)
+	}()
+	//
+	if URLForTest != nil {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			delayCh <- s.testDelay()
+			urlCh <- s.testURLAvailable(ctx, URLForTest)
 		}()
 	}
+	//
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		delayCh <- s.testDelay(ctx)
+	}()
+
 	go func() {
 		wg.Wait()
 		close(countryCh)
 		close(checkCh)
 		close(urlCh)
 		close(delayCh)
+		close(ttfbCh)
+		close(bandwidthCh)
 	}()
 	for c := range countryCh {
 		country = c
@@ -294,6 +316,21 @@ func (s *proxyTest) Test(ctx context.Context) *models.Result {
 	}
 	for d := range delayCh {
 		delay = d
+	}
+	for t := range ttfbCh {
+		ttfb = t
+	}
+	for b := range bandwidthCh {
+		bandwidth = b
+	}
+
+	if country == "" {
+		for _, c := range checkResults {
+			if c.Type == models.CheckTypeGPTWeb {
+				country = c.Value
+				break
+			}
+		}
 	}
 
 	result := &models.Result{

@@ -280,13 +280,13 @@ func (t *Test) TestSpeed(ctx context.Context) ([]models.CProxyWithResult, error)
 				defer func() {
 					<-sem
 					wg.Done()
+					t.barIncrement()
 				}()
 				result, err := testspeed(ctx, p, t.options)
 				if err != nil {
 					log.Errorln("[%s] test speed err: %v", p.Name(), err)
 				}
 				resultsCh <- result
-				t.barIncrement()
 			}(proxy)
 		}
 		wg.Wait()
@@ -346,15 +346,17 @@ func (t *Test) LogNum() {
 
 func (t *Test) LogAlive() {
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "Name\t节点\t带宽\t延迟\t链接测试\t其它")
+	fmt.Fprintln(w, "Name\t节点\t带宽\t首字节时间\t延迟\t国家\t链接测试\t其它")
 	for _, result := range t.aliveProxies {
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n",
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\t%s\t%s\t%s\n",
 			result.Name,
 			result.Proxy.Addr(),
 			result.FormattedBandwidth(),
 			result.FormattedTTFB(),
-			result.FormattedCheckResult(),
+			result.Delay,
+			result.Country,
 			result.FormattedUrlCheck(),
+			result.FormattedCheckResult(),
 		)
 	}
 	_ = w.Flush()
