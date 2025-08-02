@@ -26,7 +26,7 @@ var (
 )
 
 func testspeed(ctx context.Context, proxy models.CProxy, options *models.Options) (*models.CProxyWithResult, error) {
-	var name = proxy.Name()
+	var name = cacheKey(&proxy)
 
 	// get from cache
 	if cache := getCacheFromResult(name); cache != nil {
