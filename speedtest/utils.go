@@ -287,15 +287,15 @@ func (s *proxyTest) Test(ctx context.Context) *models.Result {
 			delayCh <- s.testDelay(ctx)
 		}()
 
+		go func() {
+			wg.Wait()
+			close(countryCh)
+			close(checkCh)
+			close(urlCh)
+			close(delayCh)
+		}()
 	}
 
-	go func() {
-		wg.Wait()
-		close(countryCh)
-		close(checkCh)
-		close(urlCh)
-		close(delayCh)
-	}()
 	for c := range countryCh {
 		country = c
 	}
