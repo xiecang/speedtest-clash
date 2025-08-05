@@ -272,12 +272,9 @@ func (t *Test) TestSpeed(ctx context.Context) ([]models.CProxyWithResult, error)
 		resultsCh      = make(chan *models.CProxyWithResult, 10)
 	)
 
-	// 启动测速 worker
+	var workerWg sync.WaitGroup
+	sem := make(chan struct{}, maxConcurrency)
 	go func() {
-		var (
-			workerWg sync.WaitGroup
-			sem      = make(chan struct{}, maxConcurrency)
-		)
 		for proxy := range t.proxiesCh {
 			atomic.AddInt32(t.count, 1)
 			if !t.proxyShouldKeep(proxy) {
