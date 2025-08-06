@@ -2,22 +2,21 @@ package speedtest
 
 import (
 	"context"
+	"encoding/csv"
 	"errors"
+	"fmt"
 	"github.com/metacubex/mihomo/common/convert"
 	"github.com/metacubex/mihomo/common/utils"
 	C "github.com/metacubex/mihomo/constant"
 	"github.com/xiecang/speedtest-clash/speedtest/models"
 	"github.com/xiecang/speedtest-clash/speedtest/requests"
 	"gopkg.in/yaml.v3"
-	"net"
-	"sync"
-
-	"encoding/csv"
-	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"strconv"
+	"sync"
 	"time"
 )
 
@@ -39,7 +38,11 @@ func testspeed(ctx context.Context, proxy models.CProxy, options *models.Options
 	)
 	switch tp {
 	case C.Shadowsocks, C.ShadowsocksR, C.Snell, C.Socks5, C.Http, C.Vmess, C.Vless, C.Trojan, C.Hysteria, C.Hysteria2, C.WireGuard, C.Tuic:
-		result := TestProxy(ctx, name, proxy, options)
+		// 增加超时保护，防止单节点阻塞
+		timeout := options.Timeout + 1*time.Minute
+		proxyCtx, cancel := context.WithTimeout(ctx, timeout)
+		defer cancel()
+		result := TestProxy(proxyCtx, name, proxy, options)
 		var r = &models.CProxyWithResult{
 			Result: *result,
 			Proxy:  proxy,

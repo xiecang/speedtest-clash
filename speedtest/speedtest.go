@@ -274,6 +274,8 @@ func (t *Test) TestSpeed(ctx context.Context) ([]models.CProxyWithResult, error)
 
 	var workerWg sync.WaitGroup
 	sem := make(chan struct{}, maxConcurrency)
+
+	// worker 处理
 	go func() {
 		for proxy := range t.proxiesCh {
 			atomic.AddInt32(t.count, 1)
@@ -285,11 +287,16 @@ func (t *Test) TestSpeed(ctx context.Context) ([]models.CProxyWithResult, error)
 			workerWg.Add(1)
 			go func(p models.CProxy) {
 				defer func() {
+					if r := recover(); r != nil {
+						log.Errorln("worker panic: %v", r)
+					}
 					workerWg.Done()
 					t.barIncrement()
 					<-sem
 				}()
-				result, err := testspeed(ctx, p, t.options)
+				proxyCtx, cancel := context.WithTimeout(ctx, t.options.Timeout+1*time.Minute)
+				defer cancel()
+				result, err := testspeed(proxyCtx, p, t.options)
 				if err != nil {
 					log.Errorln("[%s] test speed err: %v", p.Name(), err)
 				}
