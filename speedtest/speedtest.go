@@ -3,17 +3,10 @@ package speedtest
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/cheggaaa/pb/v3"
-	"github.com/metacubex/mihomo/adapter"
-	"github.com/metacubex/mihomo/adapter/provider"
-	"github.com/metacubex/mihomo/common/convert"
-	"github.com/metacubex/mihomo/log"
-	"github.com/xiecang/speedtest-clash/speedtest/models"
-	"github.com/xiecang/speedtest-clash/speedtest/requests"
-	"gopkg.in/yaml.v3"
 	"net/http"
 	"net/url"
 	"os"
@@ -25,6 +18,15 @@ import (
 	"sync/atomic"
 	"text/tabwriter"
 	"time"
+
+	"github.com/cheggaaa/pb/v3"
+	"github.com/metacubex/mihomo/adapter"
+	"github.com/metacubex/mihomo/adapter/provider"
+	"github.com/metacubex/mihomo/common/convert"
+	"github.com/metacubex/mihomo/log"
+	"github.com/xiecang/speedtest-clash/speedtest/models"
+	"github.com/xiecang/speedtest-clash/speedtest/requests"
+	"gopkg.in/yaml.v3"
 )
 
 var (
@@ -200,6 +202,10 @@ func (t *Test) loadProxies(ctx context.Context, wg *sync.WaitGroup, buf []byte, 
 		Proxies: []map[string]any{},
 	}
 	if !bytes.Contains(buf, []byte("server")) {
+		if bytes.Contains(buf, []byte("://")) {
+			// 纯订阅
+			buf = []byte(base64.StdEncoding.EncodeToString(buf))
+		}
 		proxyList, err := convert.ConvertsV2Ray(buf)
 		if err != nil {
 			t.errCh <- err
