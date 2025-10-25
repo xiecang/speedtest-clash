@@ -44,6 +44,7 @@ var t, err = speedtest.NewTest(speedtest.Options{
 if err != nil {
     panic(err)
 }
+defer t.Close()
 
 _, err = t.TestSpeed()
 if err != nil {

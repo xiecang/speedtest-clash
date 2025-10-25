@@ -5,12 +5,6 @@ import (
 	"encoding/csv"
 	"errors"
 	"fmt"
-	"github.com/metacubex/mihomo/common/convert"
-	"github.com/metacubex/mihomo/common/utils"
-	C "github.com/metacubex/mihomo/constant"
-	"github.com/xiecang/speedtest-clash/speedtest/models"
-	"github.com/xiecang/speedtest-clash/speedtest/requests"
-	"gopkg.in/yaml.v3"
 	"io"
 	"net"
 	"net/http"
@@ -18,6 +12,13 @@ import (
 	"strconv"
 	"sync"
 	"time"
+
+	"github.com/metacubex/mihomo/common/convert"
+	"github.com/metacubex/mihomo/common/utils"
+	C "github.com/metacubex/mihomo/constant"
+	"github.com/xiecang/speedtest-clash/speedtest/models"
+	"github.com/xiecang/speedtest-clash/speedtest/requests"
+	"gopkg.in/yaml.v3"
 )
 
 var (
@@ -25,11 +26,12 @@ var (
 )
 
 func testspeed(ctx context.Context, proxy models.CProxy, options *models.Options) (*models.CProxyWithResult, error) {
-	var name = cacheKey(&proxy)
+	// 生成缓存键
+	key := options.Cache.GenerateKey(&proxy)
 
-	// get from cache
-	if cache := getCacheFromResult(name); cache != nil {
-		return cache, nil
+	// 尝试从缓存获取
+	if cached, exists := options.Cache.Get(ctx, key); exists {
+		return cached, nil
 	}
 
 	var (
@@ -42,13 +44,13 @@ func testspeed(ctx context.Context, proxy models.CProxy, options *models.Options
 		timeout := options.Timeout + 1*time.Minute
 		proxyCtx, cancel := context.WithTimeout(ctx, timeout)
 		defer cancel()
-		result := TestProxy(proxyCtx, name, proxy, options)
+		result := TestProxy(proxyCtx, key, proxy, options)
 		var r = &models.CProxyWithResult{
 			Result: *result,
 			Proxy:  proxy,
 		}
-		// add cache
-		addResultCache(r)
+		// 存储到缓存
+		options.Cache.Set(ctx, key, r)
 		return r, nil
 	case C.Direct, C.Reject, C.Relay, C.Selector, C.Fallback, C.URLTest, C.LoadBalance:
 		return nil, nil

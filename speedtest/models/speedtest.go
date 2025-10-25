@@ -1,8 +1,10 @@
 package models
 
 import (
-	"github.com/metacubex/mihomo/constant"
+	"context"
 	"time"
+
+	"github.com/metacubex/mihomo/constant"
 )
 
 type SortField string
@@ -16,6 +18,14 @@ const (
 	DefaultLivenessAddr = "https://speed.cloudflare.com/__down?bytes=%d"
 )
 
+type Cache interface {
+	Get(ctx context.Context, key string) (*CProxyWithResult, bool)
+	Set(ctx context.Context, key string, result *CProxyWithResult) error
+	// GenerateKey 生成节点的唯一标识
+	GenerateKey(proxy *CProxy) string
+	Close() error
+}
+
 type Options struct {
 	LivenessAddr        string        `json:"liveness_addr"`          // 测速时调用的地址，格式如 https://speed.cloudflare.com/__down?bytes=%d
 	DownloadSize        int           `json:"download_size"`          // 测速时下载的文件大小，单位为 bit(使用默认cloudflare的话)，默认下载10M
@@ -28,6 +38,7 @@ type Options struct {
 	ProxyUrl            string        `json:"proxy_url"`              // ConfigPath 为网络链接时可使用指定代理下载
 	CheckTypes          []CheckType   `json:"check_types"`            // 检查节点可解锁的类型, 可用值请参考 CheckType
 	Concurrent          int           `json:"concurrent"`             // 测速的并发数，默认 CPU 数量*3
+	Cache               Cache         `json:"-"`                      // 缓存实现，不序列化
 }
 
 type CProxy struct {

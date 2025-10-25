@@ -272,6 +272,11 @@ func (t *Test) loadProxies(ctx context.Context, wg *sync.WaitGroup, buf []byte, 
 }
 
 func (t *Test) TestSpeed(ctx context.Context) ([]models.CProxyWithResult, error) {
+	// 检查是否已经在测速
+	if t.testing.Load() {
+		return nil, fmt.Errorf("测速正在进行中，请等待完成")
+	}
+
 	t.testing.Store(true)
 	defer t.testing.Store(false)
 
@@ -546,6 +551,12 @@ func NewTest(options models.Options) (*Test, error) {
 	if ok, msg := checkOptions(&options); !ok {
 		return nil, fmt.Errorf("配置格式不正确: %s", msg)
 	}
+
+	// 如果没有设置缓存，使用单例默认缓存
+	if options.Cache == nil {
+		options.Cache = GetDefaultCache()
+	}
+
 	var proxyUrl *url.URL
 	if options.ProxyUrl != "" {
 		var err error
@@ -564,4 +575,18 @@ func NewTest(options models.Options) (*Test, error) {
 		invalidCount: new(int32),
 		aliveCount:   new(int32),
 	}, nil
+}
+
+// Close 关闭测试实例，清理资源
+func (t *Test) Close() error {
+	// 停止自动进度输出
+	if t.logTicker != nil {
+		t.logTicker.Stop()
+	}
+
+	if t.options.Cache != nil {
+		return t.options.Cache.Close()
+	}
+
+	return nil
 }
