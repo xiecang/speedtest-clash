@@ -6,7 +6,6 @@ toolchain go1.24.4
 
 require (
 	filippo.io/intermediates v0.0.0-20251009023532-51822e170e15
-	github.com/cheggaaa/pb/v3 v3.1.7
 	github.com/metacubex/mihomo v1.19.14
 	github.com/phuslu/log v1.0.120
 	gopkg.in/yaml.v3 v3.0.1
@@ -14,7 +13,6 @@ require (
 
 require (
 	github.com/RyuaNerin/go-krypto v1.3.0 // indirect
-	github.com/VividCortex/ewma v1.2.0 // indirect
 	github.com/Yawning/aez v0.0.0-20211027044916-e49e68abd344 // indirect
 	github.com/andybalholm/brotli v1.0.6 // indirect
 	github.com/bahlo/generic-list-go v0.2.0 // indirect
@@ -26,7 +24,6 @@ require (
 	github.com/ericlagergren/polyval v0.0.0-20220411101811-e25bc10ba391 // indirect
 	github.com/ericlagergren/siv v0.0.0-20220507050439-0b757b3aa5f1 // indirect
 	github.com/ericlagergren/subtle v0.0.0-20220507045147-890d697da010 // indirect
-	github.com/fatih/color v1.18.0 // indirect
 	github.com/fsnotify/fsnotify v1.9.0 // indirect
 	github.com/gaukas/godicttls v0.0.4 // indirect
 	github.com/go-task/slim-sprig v0.0.0-20230315185526-52ccab3ef572 // indirect
@@ -44,9 +41,6 @@ require (
 	github.com/klauspost/cpuid/v2 v2.2.9 // indirect
 	github.com/klauspost/reedsolomon v1.12.3 // indirect
 	github.com/kr/pretty v0.1.0 // indirect
-	github.com/mattn/go-colorable v0.1.14 // indirect
-	github.com/mattn/go-isatty v0.0.20 // indirect
-	github.com/mattn/go-runewidth v0.0.16 // indirect
 	github.com/mdlayher/netlink v1.7.2 // indirect
 	github.com/mdlayher/socket v0.4.1 // indirect
 	github.com/metacubex/amneziawg-go v0.0.0-20250902133113-a7f637c14281 // indirect
@@ -82,7 +76,6 @@ require (
 	github.com/openacid/low v0.1.21 // indirect
 	github.com/pierrec/lz4/v4 v4.1.14 // indirect
 	github.com/quic-go/qpack v0.4.0 // indirect
-	github.com/rivo/uniseg v0.4.7 // indirect
 	github.com/samber/lo v1.51.0 // indirect
 	github.com/sina-ghaderi/poly1305 v0.0.0-20220724002748-c5926b03988b // indirect
 	github.com/sina-ghaderi/rabaead v0.0.0-20220730151906-ab6e06b96e8c // indirect

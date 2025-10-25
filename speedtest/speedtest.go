@@ -19,7 +19,6 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"github.com/cheggaaa/pb/v3"
 	"github.com/metacubex/mihomo/adapter"
 	"github.com/metacubex/mihomo/adapter/provider"
 	"github.com/metacubex/mihomo/common/convert"
@@ -52,20 +51,35 @@ type Test struct {
 	totalCount   *int32 // 计数器，记录总节点数量
 	count        *int32 // 计数器，记录已测速的节点数量
 	invalidCount *int32 // 计数器，记录无效节点数量
+	aliveCount   *int32 // 计数器，记录有效节点数量
+
+	// 自动进度输出相关
+	logTicker *time.Ticker
+	testing   atomic.Bool // 测速状态
+}
+
+func (t *Test) checkAndLogProgress() {
+	processed := atomic.LoadInt32(t.count)
+	total := atomic.LoadInt32(t.totalCount)
+	alive := atomic.LoadInt32(t.aliveCount)
+	invalid := atomic.LoadInt32(t.invalidCount)
+	now := time.Now()
 	//
-	bar *pb.ProgressBar // 进度条
+	percentage := float64(processed) / float64(total) * 100
+	fmt.Printf("[%s] 📊 进度: %d/%d (%.1f%%) | ✅ 有效: %d | ❌ 无效: %d\n",
+		now.Format("15:04:05"), processed, total, percentage, alive, invalid)
 }
 
-func (t *Test) barIncrement() {
-	if t.bar != nil {
-		t.bar.Increment()
-	}
-}
-
-func (t *Test) barFinish() {
-	if t.bar != nil {
-		t.bar.Finish()
-	}
+func (t *Test) startAutoProgress() {
+	t.logTicker = time.NewTicker(3 * time.Second) // 每3秒输出一次
+	go func() {
+		for range t.logTicker.C {
+			if !t.testing.Load() {
+				break
+			}
+			t.checkAndLogProgress()
+		}
+	}()
 }
 
 func sortResult(results []models.Result, sortField models.SortField) ([]models.Result, error) {
@@ -212,16 +226,10 @@ func (t *Test) loadProxies(ctx context.Context, wg *sync.WaitGroup, buf []byte, 
 			return
 		}
 		atomic.AddInt32(t.totalCount, int32(len(proxyList)))
-		if t.bar == nil {
-			t.bar = pb.StartNew(int(atomic.LoadInt32(t.totalCount)))
-		} else {
-			t.bar.SetTotal(int64(atomic.LoadInt32(t.totalCount)))
-		}
 		for _, p := range proxyList {
 			proxy, err := adapter.ParseProxy(p)
 			if err != nil {
 				atomic.AddInt32(t.invalidCount, 1)
-				t.barIncrement()
 				log.Warnln("ParseProxy error: proxy %s", err)
 				continue
 			}
@@ -237,17 +245,11 @@ func (t *Test) loadProxies(ctx context.Context, wg *sync.WaitGroup, buf []byte, 
 	proxiesConfig := rawCfg.Proxies
 	providersConfig := rawCfg.Providers
 	atomic.AddInt32(t.totalCount, int32(len(proxiesConfig)))
-	if t.bar == nil {
-		t.bar = pb.StartNew(int(atomic.LoadInt32(t.totalCount)))
-	} else {
-		t.bar.SetTotal(int64(atomic.LoadInt32(t.totalCount)))
-	}
 
 	for i, config := range proxiesConfig {
 		proxy, err := adapter.ParseProxy(config)
 		if err != nil {
 			atomic.AddInt32(t.invalidCount, 1)
-			t.barIncrement()
 			log.Warnln("ParseProxy error: proxy %d: %s", i, err)
 			continue
 		}
@@ -270,8 +272,13 @@ func (t *Test) loadProxies(ctx context.Context, wg *sync.WaitGroup, buf []byte, 
 }
 
 func (t *Test) TestSpeed(ctx context.Context) ([]models.CProxyWithResult, error) {
+	t.testing.Store(true)
+	defer t.testing.Store(false)
+
 	var wg sync.WaitGroup
 	t.ReadProxies(ctx, &wg, t.options.ConfigPath, t.proxyUrl)
+
+	t.startAutoProgress()
 
 	var (
 		maxConcurrency = t.options.Concurrent
@@ -284,9 +291,8 @@ func (t *Test) TestSpeed(ctx context.Context) ([]models.CProxyWithResult, error)
 	// worker 处理
 	go func() {
 		for proxy := range t.proxiesCh {
-			atomic.AddInt32(t.count, 1)
 			if !t.proxyShouldKeep(proxy) {
-				t.barIncrement()
+				atomic.AddInt32(t.count, 1)
 				continue
 			}
 			sem <- struct{}{}
@@ -296,8 +302,8 @@ func (t *Test) TestSpeed(ctx context.Context) ([]models.CProxyWithResult, error)
 					if r := recover(); r != nil {
 						log.Errorln("worker panic: %v", r)
 					}
+					atomic.AddInt32(t.count, 1)
 					workerWg.Done()
-					t.barIncrement()
 					<-sem
 				}()
 				proxyCtx, cancel := context.WithTimeout(ctx, t.options.Timeout+1*time.Minute)
@@ -310,7 +316,6 @@ func (t *Test) TestSpeed(ctx context.Context) ([]models.CProxyWithResult, error)
 			}(proxy)
 		}
 		workerWg.Wait()
-		t.barFinish()
 		close(resultsCh)
 	}()
 
@@ -342,6 +347,7 @@ func (t *Test) TestSpeed(ctx context.Context) ([]models.CProxyWithResult, error)
 				results = append(results, *result)
 				if result.Alive() {
 					aliveProxies = append(aliveProxies, *result)
+					atomic.AddInt32(t.aliveCount, 1)
 				}
 			}
 		}
@@ -358,16 +364,23 @@ func (t *Test) InvalidCount() int32 {
 
 // ProcessCount 返回已处理的节点数量
 func (t *Test) ProcessCount() int32 {
-	return atomic.LoadInt32(t.count) + t.InvalidCount()
+	return atomic.LoadInt32(t.count)
 }
 
 func (t *Test) LogNum() {
-	log.Infoln(
-		"总共 %d 个节点，无效节点 %d 个，可访问 %d 个",
-		atomic.LoadInt32(t.totalCount),
-		atomic.LoadInt32(t.invalidCount),
-		len(t.aliveProxies),
-	)
+	now := time.Now().Format("15:04:05")
+	total := atomic.LoadInt32(t.totalCount)
+	invalid := atomic.LoadInt32(t.invalidCount)
+	alive := len(t.aliveProxies)
+	processed := atomic.LoadInt32(t.count)
+
+	fmt.Printf("\n[%s] 🎯 测速完成！\n", now)
+	fmt.Printf("📊 统计信息:\n")
+	fmt.Printf("   • 总节点数: %d\n", total)
+	fmt.Printf("   • 已处理: %d\n", processed)
+	fmt.Printf("   • ✅ 有效节点: %d\n", alive)
+	fmt.Printf("   • ❌ 无效节点: %d\n", invalid)
+	fmt.Printf("   • 📈 有效率: %.1f%%\n", float64(alive)/float64(processed)*100)
 }
 
 func (t *Test) LogAlive() {
@@ -549,5 +562,6 @@ func NewTest(options models.Options) (*Test, error) {
 		totalCount:   new(int32),
 		count:        new(int32),
 		invalidCount: new(int32),
+		aliveCount:   new(int32),
 	}, nil
 }
