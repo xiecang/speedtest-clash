@@ -353,6 +353,8 @@ func (t *Test) TestSpeed(ctx context.Context) ([]models.CProxyWithResult, error)
 				if result.Alive() {
 					aliveProxies = append(aliveProxies, *result)
 					atomic.AddInt32(t.aliveCount, 1)
+				} else {
+					atomic.AddInt32(t.invalidCount, 1)
 				}
 			}
 		}
