@@ -130,40 +130,6 @@ func (t *Test) proxyShouldKeep(proxy models.CProxy) bool {
 	return false
 }
 
-// filterProxies 过滤出指定的代理 filter 是过滤的正则表达式，proxies 是代理
-func (t *Test) filterProxies(proxies map[string]models.CProxy) map[string]models.CProxy {
-	var (
-		regexpContain    *regexp.Regexp
-		regexpNonContain *regexp.Regexp
-		regexContain     = t.options.NameRegexContain
-		regexNonContain  = t.options.NameRegexNonContain
-	)
-	if regexContain != "" {
-		regexpContain = regexp.MustCompile(regexContain)
-	}
-	if regexNonContain != "" {
-		regexpNonContain = regexp.MustCompile(regexNonContain)
-	}
-	if regexpContain == nil && regexpNonContain == nil {
-		return proxies
-	}
-
-	filteredProxies := make(map[string]models.CProxy)
-	for name, proxy := range proxies {
-		if regexpNonContain != nil && regexpNonContain.MatchString(name) {
-			continue
-		}
-		if regexpContain != nil {
-			if regexpContain.MatchString(name) {
-				filteredProxies[name] = proxy
-			}
-		} else {
-			filteredProxies[name] = proxy
-		}
-	}
-	return filteredProxies
-}
-
 func (t *Test) ReadProxies(ctx context.Context, wg *sync.WaitGroup, configPathConfig string, proxyUrl *url.URL) {
 	paths := strings.Split(configPathConfig, "|")
 	wg.Add(len(paths))
@@ -271,6 +237,24 @@ func (t *Test) loadProxies(ctx context.Context, wg *sync.WaitGroup, buf []byte, 
 
 }
 
+func (t *Test) loadProxiesFromOptions() {
+	if len(t.options.Proxies) == 0 {
+		return
+	}
+	atomic.AddInt32(t.totalCount, int32(len(t.options.Proxies)))
+
+	for i, config := range t.options.Proxies {
+		proxy, err := adapter.ParseProxy(config)
+		if err != nil {
+			atomic.AddInt32(t.invalidCount, 1)
+			log.Warnln("ParseProxy error: proxy %d: %s", i, err)
+			continue
+		}
+
+		t.proxiesCh <- models.CProxy{Proxy: proxy, SecretConfig: config}
+	}
+}
+
 func (t *Test) TestSpeed(ctx context.Context) ([]models.CProxyWithResult, error) {
 	// 检查是否已经在测速
 	if t.testing.Load() {
@@ -281,7 +265,12 @@ func (t *Test) TestSpeed(ctx context.Context) ([]models.CProxyWithResult, error)
 	defer t.testing.Store(false)
 
 	var wg sync.WaitGroup
-	t.ReadProxies(ctx, &wg, t.options.ConfigPath, t.proxyUrl)
+	if t.options.ConfigPath != "" {
+		t.ReadProxies(ctx, &wg, t.options.ConfigPath, t.proxyUrl)
+	}
+	if len(t.options.Proxies) > 0 {
+		t.loadProxiesFromOptions()
+	}
 
 	t.startAutoProgress()
 
@@ -527,8 +516,8 @@ func (t *Test) Proxies() ([]map[string]interface{}, error) {
 }
 
 func checkOptions(options *models.Options) (bool, string) {
-	if options.ConfigPath == "" {
-		return false, "配置不能为空"
+	if options.ConfigPath == "" && len(options.Proxies) == 0 {
+		return false, "配置不能为空，请至少提供 ConfigPath 或 Proxies"
 	}
 	if options.DownloadSize == 0 {
 		options.DownloadSize = 100 * 1024 * 1024
