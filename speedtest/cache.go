@@ -71,7 +71,11 @@ func NewDefaultCacheWithTTL(ttl time.Duration) models.Cache {
 
 func (c *DefaultCache) Get(ctx context.Context, key string) (*models.CProxyWithResult, bool) {
 	if item, ok := c.storage.Load(key); ok {
-		cacheItem := item.(*cacheItem)
+		cacheItem, ok := item.(*cacheItem)
+		if !ok {
+			c.storage.Delete(key)
+			return nil, false
+		}
 
 		// 检查是否过期
 		if cacheItem.expiresAt.IsZero() || time.Now().Before(cacheItem.expiresAt) {
@@ -126,7 +130,11 @@ func (c *DefaultCache) startCleanup() {
 func (c *DefaultCache) cleanup() {
 	now := time.Now()
 	c.storage.Range(func(key, value interface{}) bool {
-		item := value.(*cacheItem)
+		item, ok := value.(*cacheItem)
+		if !ok {
+			c.storage.Delete(key)
+			return true
+		}
 		if !item.expiresAt.IsZero() && now.After(item.expiresAt) {
 			c.storage.Delete(key)
 		}
@@ -136,10 +144,22 @@ func (c *DefaultCache) cleanup() {
 
 // Close 关闭缓存，停止清理协程
 func (c *DefaultCache) Close() error {
-	// 如果是单例缓存，不关闭清理协程
+	// 如果是单例缓存，不关闭清理协程（避免影响其他使用者）
 	if c == defaultCacheInstance {
 		return nil
 	}
-	close(c.stopChan)
+	if c.stopChan != nil {
+		select {
+		case <-c.stopChan:
+			// 已经关闭
+		default:
+			close(c.stopChan)
+		}
+		c.stopChan = nil
+	}
+	if c.cleanupTicker != nil {
+		c.cleanupTicker.Stop()
+		c.cleanupTicker = nil
+	}
 	return nil
 }

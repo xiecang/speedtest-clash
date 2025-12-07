@@ -16,6 +16,7 @@ import (
 	"github.com/metacubex/mihomo/common/convert"
 	"github.com/metacubex/mihomo/common/utils"
 	C "github.com/metacubex/mihomo/constant"
+	"github.com/metacubex/mihomo/log"
 	"github.com/xiecang/speedtest-clash/speedtest/models"
 	"github.com/xiecang/speedtest-clash/speedtest/requests"
 	"gopkg.in/yaml.v3"
@@ -40,17 +41,20 @@ func testspeed(ctx context.Context, proxy models.CProxy, options *models.Options
 	)
 	switch tp {
 	case C.Shadowsocks, C.ShadowsocksR, C.Snell, C.Socks5, C.Http, C.Vmess, C.Vless, C.Trojan, C.Hysteria, C.Hysteria2, C.WireGuard, C.Tuic:
-		// 增加超时保护，防止单节点阻塞
-		timeout := options.Timeout + 1*time.Minute
-		proxyCtx, cancel := context.WithTimeout(ctx, timeout)
-		defer cancel()
-		result := TestProxy(proxyCtx, key, proxy, options)
+		// 使用传入的 ctx，TestProxy 内部会处理超时
+		result := TestProxy(ctx, key, proxy, options)
+		if result == nil {
+			return nil, fmt.Errorf("test proxy returned nil result")
+		}
 		var r = &models.CProxyWithResult{
 			Result: *result,
 			Proxy:  proxy,
 		}
 		// 存储到缓存
-		options.Cache.Set(ctx, key, r)
+		if err := options.Cache.Set(ctx, key, r); err != nil {
+			// 缓存失败不影响返回结果
+			log.Warnln("failed to cache result: %v", err)
+		}
 		return r, nil
 	case C.Direct, C.Reject, C.Relay, C.Selector, C.Fallback, C.URLTest, C.LoadBalance:
 		return nil, nil
@@ -100,11 +104,17 @@ func (s *proxyTest) testBandwidth(ctx context.Context, downloadSize int) (time.D
 	}
 	ttfb := time.Since(start)
 
-	written, _ := io.Copy(io.Discard, resp.Body)
+	written, err := io.Copy(io.Discard, resp.Body)
+	if err != nil {
+		return 0, 0, fmt.Errorf("failed to read response body: %w", err)
+	}
 	if written == 0 {
 		return 0, 0, fmt.Errorf("test domain return empty body")
 	}
 	downloadTime := time.Since(start) - ttfb
+	if downloadTime <= 0 {
+		return 0, 0, fmt.Errorf("invalid download time")
+	}
 	bandwidth := (float64(written) * 8) / downloadTime.Seconds() / 1e3 // 转换为 Kbps
 
 	return ttfb, bandwidth, nil
@@ -292,6 +302,7 @@ func (s *proxyTest) Test(ctx context.Context) *models.Result {
 			delayCh <- s.testDelay(ctx)
 		}()
 
+		// 等待所有 goroutine 完成后关闭 channels
 		go func() {
 			wg.Wait()
 			close(countryCh)
@@ -299,6 +310,12 @@ func (s *proxyTest) Test(ctx context.Context) *models.Result {
 			close(urlCh)
 			close(delayCh)
 		}()
+	} else {
+		// 如果测速失败，立即关闭所有 channels
+		close(countryCh)
+		close(checkCh)
+		close(urlCh)
+		close(delayCh)
 	}
 
 	for c := range countryCh {
@@ -337,8 +354,13 @@ func (s *proxyTest) Test(ctx context.Context) *models.Result {
 }
 
 func TestProxy(ctx context.Context, name string, proxy C.Proxy, option *models.Options) *models.Result {
+	// 为每个代理测试创建带超时的 context
+	timeout := option.Timeout + 1*time.Minute
+	proxyCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
 	p := newProxyTest(name, proxy, option)
-	return p.Test(ctx)
+	return p.Test(proxyCtx)
 }
 
 func writeNodeConfigurationToYAML(filePath string, results []models.CProxyWithResult) error {

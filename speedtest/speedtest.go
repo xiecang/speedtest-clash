@@ -35,9 +35,8 @@ var (
 )
 
 type Test struct {
-	options  *models.Options
-	proxyUrl *url.URL
-	//proxies      map[string]models.CProxy
+	options      *models.Options
+	proxyUrl     *url.URL
 	results      []models.CProxyWithResult
 	aliveProxies []models.CProxyWithResult
 	_testedSpeed bool
@@ -50,12 +49,13 @@ type Test struct {
 	//
 	totalCount   *int32 // 计数器，记录总节点数量
 	count        *int32 // 计数器，记录已测速的节点数量
-	invalidCount *int32 // 计数器，记录无效节点数量
+	invalidCount *int32 // 计数器，记录无效节点数量（仅测速阶段）
 	aliveCount   *int32 // 计数器，记录有效节点数量
 
 	// 自动进度输出相关
 	logTicker *time.Ticker
-	testing   atomic.Bool // 测速状态
+	stopChan  chan struct{} // 用于停止进度输出
+	testing   atomic.Bool   // 测速状态
 }
 
 func (t *Test) checkAndLogProgress() {
@@ -64,20 +64,32 @@ func (t *Test) checkAndLogProgress() {
 	alive := atomic.LoadInt32(t.aliveCount)
 	invalid := atomic.LoadInt32(t.invalidCount)
 	now := time.Now()
-	//
-	percentage := float64(processed) / float64(total) * 100
+
+	// 防止除零
+	var percentage float64
+	if total > 0 {
+		percentage = float64(processed) / float64(total) * 100
+	}
 	fmt.Printf("[%s] 📊 进度: %d/%d (%.1f%%) | ✅ 有效: %d | ❌ 无效: %d\n",
 		now.Format("15:04:05"), processed, total, percentage, alive, invalid)
 }
 
 func (t *Test) startAutoProgress() {
 	t.logTicker = time.NewTicker(3 * time.Second) // 每3秒输出一次
+	if t.stopChan == nil {
+		t.stopChan = make(chan struct{})
+	}
 	go func() {
-		for range t.logTicker.C {
-			if !t.testing.Load() {
-				break
+		for {
+			select {
+			case <-t.logTicker.C:
+				if !t.testing.Load() {
+					return
+				}
+				t.checkAndLogProgress()
+			case <-t.stopChan:
+				return
 			}
-			t.checkAndLogProgress()
 		}
 	}()
 }
@@ -105,29 +117,26 @@ func sortResult(results []models.Result, sortField models.SortField) ([]models.R
 }
 
 // proxyShouldKeep 根据正则等，判断是否应该对此节点测速
+// 注意：正则表达式已在 NewTest 时预编译，这里直接使用
 func (t *Test) proxyShouldKeep(proxy models.CProxy) bool {
-	var (
-		regexContain    = t.options.NameRegexContain
-		regexNonContain = t.options.NameRegexNonContain
-	)
-	if regexContain != "" && t.regexpContain == nil {
-		t.regexpContain = regexp.MustCompile(regexContain)
-	}
-	if regexNonContain != "" && t.regexpNonContain == nil {
-		t.regexpNonContain = regexp.MustCompile(regexNonContain)
-	}
 	if t.regexpContain == nil && t.regexpNonContain == nil {
 		return true
 	}
-	if t.regexpContain != nil {
-		name := proxy.Name()
-		if t.regexpContain.MatchString(name) {
-			return true
-		}
-	} else {
-		return true
+
+	name := proxy.Name()
+
+	// 如果设置了 regexpNonContain，且匹配，则排除
+	if t.regexpNonContain != nil && t.regexpNonContain.MatchString(name) {
+		return false
 	}
-	return false
+
+	// 如果设置了 regexpContain，必须匹配才测试
+	if t.regexpContain != nil {
+		return t.regexpContain.MatchString(name)
+	}
+
+	// 只设置了 regexpNonContain 且未匹配，则测试
+	return true
 }
 
 func (t *Test) ReadProxies(ctx context.Context, wg *sync.WaitGroup, configPathConfig string, proxyUrl *url.URL) {
@@ -276,7 +285,7 @@ func (t *Test) TestSpeed(ctx context.Context) ([]models.CProxyWithResult, error)
 
 	var (
 		maxConcurrency = t.options.Concurrent
-		resultsCh      = make(chan *models.CProxyWithResult, 10)
+		resultsCh      = make(chan *models.CProxyWithResult, maxConcurrency*2)
 	)
 
 	var workerWg sync.WaitGroup
@@ -300,13 +309,14 @@ func (t *Test) TestSpeed(ctx context.Context) ([]models.CProxyWithResult, error)
 					workerWg.Done()
 					<-sem
 				}()
-				proxyCtx, cancel := context.WithTimeout(ctx, t.options.Timeout+1*time.Minute)
-				defer cancel()
-				result, err := testspeed(proxyCtx, p, t.options)
+				// 使用传入的 ctx，testspeed 内部会处理超时
+				result, err := testspeed(ctx, p, t.options)
 				if err != nil {
 					log.Errorln("[%s] test speed err: %v", p.Name(), err)
 				}
-				resultsCh <- result
+				if result != nil {
+					resultsCh <- result
+				}
 			}(proxy)
 		}
 		workerWg.Wait()
@@ -343,8 +353,13 @@ func (t *Test) TestSpeed(ctx context.Context) ([]models.CProxyWithResult, error)
 					aliveProxies = append(aliveProxies, *result)
 					atomic.AddInt32(t.aliveCount, 1)
 				} else {
+					// 注意：invalidCount 在 ParseProxy 失败时也会增加
+					// 这里只统计测速后无效的节点
 					atomic.AddInt32(t.invalidCount, 1)
 				}
+			} else {
+				// result 为 nil 表示节点不支持测速或测速失败
+				atomic.AddInt32(t.invalidCount, 1)
 			}
 		}
 	}
@@ -376,7 +391,13 @@ func (t *Test) LogNum() {
 	fmt.Printf("   • 已处理: %d\n", processed)
 	fmt.Printf("   • ✅ 有效节点: %d\n", alive)
 	fmt.Printf("   • ❌ 无效节点: %d\n", invalid)
-	fmt.Printf("   • 📈 有效率: %.1f%%\n", float64(alive)/float64(processed)*100)
+
+	// 防止除零
+	var efficiency float64
+	if processed > 0 {
+		efficiency = float64(alive) / float64(processed) * 100
+	}
+	fmt.Printf("   • 📈 有效率: %.1f%%\n", efficiency)
 }
 
 func (t *Test) LogAlive() {
@@ -433,7 +454,10 @@ func (t *Test) WriteToCsv(names ...string) error {
 // AliveProxiesWithResult 可访问的节点以及结果
 func (t *Test) AliveProxiesWithResult() ([]models.CProxyWithResult, error) {
 	if !t._testedSpeed {
-		_, _ = t.TestSpeed(context.Background())
+		_, err := t.TestSpeed(context.Background())
+		if err != nil {
+			return nil, fmt.Errorf("test speed failed: %w", err)
+		}
 	}
 
 	return t.aliveProxies, nil
@@ -442,7 +466,10 @@ func (t *Test) AliveProxiesWithResult() ([]models.CProxyWithResult, error) {
 // ProxiesWithResult 合法的节点以及结果
 func (t *Test) ProxiesWithResult() ([]models.CProxyWithResult, error) {
 	if !t._testedSpeed {
-		_, _ = t.TestSpeed(context.Background())
+		_, err := t.TestSpeed(context.Background())
+		if err != nil {
+			return nil, fmt.Errorf("test speed failed: %w", err)
+		}
 	}
 
 	return t.results, nil
@@ -481,7 +508,10 @@ func (t *Test) ProxiesToJson() ([]byte, error) {
 // AliveProxies 可访问的节点
 func (t *Test) AliveProxies() ([]map[string]interface{}, error) {
 	if !t._testedSpeed {
-		_, _ = t.TestSpeed(context.Background())
+		_, err := t.TestSpeed(context.Background())
+		if err != nil {
+			return nil, fmt.Errorf("test speed failed: %w", err)
+		}
 	}
 	var (
 		ps []map[string]any
@@ -500,7 +530,10 @@ func (t *Test) AliveProxies() ([]map[string]interface{}, error) {
 // Proxies 合法的节点
 func (t *Test) Proxies() ([]map[string]interface{}, error) {
 	if !t._testedSpeed {
-		_, _ = t.TestSpeed(context.Background())
+		_, err := t.TestSpeed(context.Background())
+		if err != nil {
+			return nil, fmt.Errorf("test speed failed: %w", err)
+		}
 	}
 	var (
 		ps []map[string]any
@@ -556,15 +589,35 @@ func NewTest(options models.Options) (*Test, error) {
 		}
 	}
 
+	// 预编译正则表达式，避免运行时编译和加锁
+	var regexpContain, regexpNonContain *regexp.Regexp
+	if options.NameRegexContain != "" {
+		var err error
+		regexpContain, err = regexp.Compile(options.NameRegexContain)
+		if err != nil {
+			return nil, fmt.Errorf("NameRegexContain 正则表达式编译失败: %w", err)
+		}
+	}
+	if options.NameRegexNonContain != "" {
+		var err error
+		regexpNonContain, err = regexp.Compile(options.NameRegexNonContain)
+		if err != nil {
+			return nil, fmt.Errorf("NameRegexNonContain 正则表达式编译失败: %w", err)
+		}
+	}
+
 	return &Test{
-		options:      &options,
-		proxyUrl:     proxyUrl,
-		proxiesCh:    make(chan models.CProxy, cpuCount*10),
-		errCh:        make(chan error, 1),
-		totalCount:   new(int32),
-		count:        new(int32),
-		invalidCount: new(int32),
-		aliveCount:   new(int32),
+		options:          &options,
+		proxyUrl:         proxyUrl,
+		regexpContain:    regexpContain,
+		regexpNonContain: regexpNonContain,
+		proxiesCh:        make(chan models.CProxy, cpuCount*10),
+		errCh:            make(chan error, cpuCount*10), // 增加错误 channel 缓冲区
+		totalCount:       new(int32),
+		count:            new(int32),
+		invalidCount:     new(int32),
+		aliveCount:       new(int32),
+		stopChan:         make(chan struct{}),
 	}, nil
 }
 
@@ -573,6 +626,16 @@ func (t *Test) Close() error {
 	// 停止自动进度输出
 	if t.logTicker != nil {
 		t.logTicker.Stop()
+		t.logTicker = nil
+	}
+	if t.stopChan != nil {
+		select {
+		case <-t.stopChan:
+			// 已经关闭
+		default:
+			close(t.stopChan)
+		}
+		t.stopChan = nil
 	}
 
 	if t.options.Cache != nil {
