@@ -15,7 +15,7 @@ const (
 	SortFieldTTFB       SortField = "t"         // 延迟
 	SortFieldTTFB2      SortField = "ttfb"
 
-	DefaultLivenessAddr = "https://speed.cloudflare.com/__down?bytes=%d"
+	DefaultLivenessAddr = "https://github.com/aboutcode-org/scancode-toolkit/releases/download/v32.4.1/scancode-toolkit-v32.4.1_py3.13-linux.tar.gz"
 )
 
 type Cache interface {
@@ -27,7 +27,7 @@ type Cache interface {
 }
 
 type Options struct {
-	LivenessAddr        string           `json:"liveness_addr"`          // 测速时调用的地址，格式如 https://speed.cloudflare.com/__down?bytes=%d
+	LivenessAddr        string           `json:"liveness_addr"`          // 测速时调用的地址，可下载的任意地址
 	DownloadSize        int              `json:"download_size"`          // 测速时下载的文件大小，单位为 bit(使用默认cloudflare的话)，默认下载10M
 	Timeout             time.Duration    `json:"timeout"`                // 每个代理测速的超时时间
 	ConfigPath          string           `json:"config_path"`            // 配置文件地址，可以为 URL 或者本地路径，多个使用 | 分隔

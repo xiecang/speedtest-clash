@@ -41,7 +41,6 @@ func testspeed(ctx context.Context, proxy models.CProxy, options *models.Options
 	)
 	switch tp {
 	case C.Shadowsocks, C.ShadowsocksR, C.Snell, C.Socks5, C.Http, C.Vmess, C.Vless, C.Trojan, C.Hysteria, C.Hysteria2, C.WireGuard, C.Tuic:
-		// 使用传入的 ctx，TestProxy 内部会处理超时
 		result := TestProxy(ctx, key, proxy, options)
 		if result == nil {
 			return nil, fmt.Errorf("test proxy returned nil result")
@@ -73,7 +72,8 @@ type proxyTest struct {
 }
 
 func newProxyTest(name string, proxy C.Proxy, option *models.Options) *proxyTest {
-	client := requests.GetClient(proxy, option.Timeout)
+	timeout := option.Timeout + 3*time.Minute
+	client := requests.GetClient(proxy, timeout)
 	return &proxyTest{
 		name:   name,
 		option: option,
@@ -82,12 +82,13 @@ func newProxyTest(name string, proxy C.Proxy, option *models.Options) *proxyTest
 	}
 }
 
-func (s *proxyTest) testBandwidth(ctx context.Context, downloadSize int) (time.Duration, float64, error) {
+func (s *proxyTest) testBandwidth(ctx context.Context) (time.Duration, float64, error) {
 	var (
-		client         = s.client
-		livenessObject = s.option.LivenessAddr
+		client       = s.client
+		url          = s.option.LivenessAddr
+		downloadSize = s.option.DownloadSize
 	)
-	url := fmt.Sprintf(livenessObject, downloadSize)
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return 0, 0, fmt.Errorf("create request failed, err: %v", err)
@@ -104,7 +105,8 @@ func (s *proxyTest) testBandwidth(ctx context.Context, downloadSize int) (time.D
 	}
 	ttfb := time.Since(start)
 
-	written, err := io.Copy(io.Discard, resp.Body)
+	limitedReader := io.LimitReader(resp.Body, int64(downloadSize))
+	written, err := io.Copy(io.Discard, limitedReader)
 	if err != nil {
 		return 0, 0, fmt.Errorf("failed to read response body: %w", err)
 	}
@@ -242,19 +244,20 @@ func (s *proxyTest) Test(ctx context.Context) *models.Result {
 		name       = s.name
 		option     = s.option
 		proxy      = s.proxy
-		chunkSize  = option.DownloadSize
 		checkTypes = option.CheckTypes
 		URLForTest = option.URLForTest
 	)
 
 	reachable := s.isReachable()
 	if !reachable {
+		log.Debugln("[%s] 节点不可达，地址: %s", name, s.proxy.Addr())
 		return &models.Result{
 			Name: name,
 		}
 	}
-	ttfb, bandwidth, err := s.testBandwidth(ctx, chunkSize)
+	ttfb, bandwidth, err := s.testBandwidth(ctx)
 	if err != nil {
+		log.Debugln("[%s] 带宽测试失败，错误: %v", name, err)
 		return &models.Result{Name: name}
 	}
 
@@ -312,6 +315,7 @@ func (s *proxyTest) Test(ctx context.Context) *models.Result {
 		}()
 	} else {
 		// 如果测速失败，立即关闭所有 channels
+		log.Debugln("[%s] 测速失败，TTFB: %v, Bandwidth: %.2f Kbps", name, ttfb, bandwidth)
 		close(countryCh)
 		close(checkCh)
 		close(urlCh)
@@ -354,8 +358,7 @@ func (s *proxyTest) Test(ctx context.Context) *models.Result {
 }
 
 func TestProxy(ctx context.Context, name string, proxy C.Proxy, option *models.Options) *models.Result {
-	// 为每个代理测试创建带超时的 context
-	timeout := option.Timeout + 1*time.Minute
+	timeout := option.Timeout + 3*time.Minute
 	proxyCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
