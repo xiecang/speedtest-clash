@@ -4,13 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/metacubex/mihomo/log"
-	"github.com/xiecang/speedtest-clash/speedtest"
-	"github.com/xiecang/speedtest-clash/speedtest/models"
 	"io"
 	"net/http"
 	"strconv"
 	"time"
+
+	"github.com/metacubex/mihomo/log"
+	"github.com/xiecang/speedtest-clash/speedtest"
+	"github.com/xiecang/speedtest-clash/speedtest/models"
 )
 
 func resError(w http.ResponseWriter, err error) {
@@ -38,7 +39,7 @@ func filterAlive(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	if body.Timeout <= time.Second {
-		body.Timeout = time.Second * 5
+		body.Timeout = 1 * time.Minute
 	}
 	t, err := speedtest.NewTest(body)
 	if err != nil {

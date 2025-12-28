@@ -71,7 +71,7 @@ type proxyTest struct {
 }
 
 func newProxyTest(name string, proxy C.Proxy, option *models.Options) *proxyTest {
-	timeout := option.Timeout + 3*time.Minute
+	timeout := option.Timeout
 	client := requests.GetClient(proxy, timeout)
 	return &proxyTest{
 		name:   name,
@@ -335,7 +335,7 @@ func (s *proxyTest) Test(ctx context.Context) *models.Result {
 }
 
 func TestProxy(ctx context.Context, name string, proxy C.Proxy, option *models.Options) *models.Result {
-	timeout := option.Timeout + 3*time.Minute
+	timeout := option.Timeout
 	proxyCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 

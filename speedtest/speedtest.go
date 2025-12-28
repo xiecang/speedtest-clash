@@ -556,7 +556,7 @@ func checkOptions(options *models.Options) (bool, string) {
 		options.DownloadSize = 100 * 1024 * 1024
 	}
 	if options.Timeout == 0 {
-		options.Timeout = 5 * time.Second
+		options.Timeout = 2 * time.Minute
 	}
 	if options.SortField == "" {
 		options.SortField = models.SortFieldBandwidth
