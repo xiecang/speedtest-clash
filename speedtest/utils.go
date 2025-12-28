@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"os"
 	"strconv"
@@ -224,21 +223,6 @@ func (s *proxyTest) testURLAvailable(ctx context.Context, urls []string) map[str
 	return urlResults
 }
 
-func (s *proxyTest) isReachable() bool {
-	var (
-		address = s.proxy.Addr()
-		timeout = 2 * time.Second
-	)
-	conn, err := net.DialTimeout("tcp", address, timeout)
-	if err != nil {
-		return false
-	}
-	defer func(conn net.Conn) {
-		_ = conn.Close()
-	}(conn)
-	return true
-}
-
 func (s *proxyTest) Test(ctx context.Context) *models.Result {
 	var (
 		name       = s.name
@@ -248,13 +232,6 @@ func (s *proxyTest) Test(ctx context.Context) *models.Result {
 		URLForTest = option.URLForTest
 	)
 
-	reachable := s.isReachable()
-	if !reachable {
-		log.Debugln("[%s] 节点不可达，地址: %s", name, s.proxy.Addr())
-		return &models.Result{
-			Name: name,
-		}
-	}
 	ttfb, bandwidth, err := s.testBandwidth(ctx)
 	if err != nil {
 		log.Debugln("[%s] 带宽测试失败，错误: %v", name, err)
