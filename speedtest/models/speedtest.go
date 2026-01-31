@@ -39,6 +39,7 @@ type Options struct {
 	CheckTypes           []CheckType      `json:"check_types"`            // 检查节点可解锁的类型, 可用值请参考 CheckType
 	Concurrent           int              `json:"concurrent"`             // 测速的并发数，默认 CPU 数量*3
 	BandwidthConcurrency int              `json:"bandwidth_concurrency"`  // 带宽测速并发数
+	LatencySamples       int              `json:"latency_samples"`        // 建立连接后的延迟测试次数
 	Cache                Cache            `json:"-"`                      // 缓存实现，不序列化
 	Proxies              []map[string]any `json:"-"`                      // 支持传入 proxy 配置来测速
 }

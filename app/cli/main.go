@@ -20,6 +20,7 @@ var (
 	sortField          = flag.String("sort", "b", "sort field for testing proxies, b for bandwidth, t for TTFB")
 	output             = flag.String("output", "", "output result to csv/yaml file")
 	bandwidthConcur    = flag.Int("concurrent-bandwidth", 4, "concurrency for bandwidth testing")
+	latencySamples     = flag.Int("latency-samples", 1, "samples for latency testing after connection established")
 )
 
 func main() {
@@ -37,6 +38,7 @@ func main() {
 		NameRegexContain:     *filterRegexConfig,
 		SortField:            models.SortField(*sortField),
 		BandwidthConcurrency: *bandwidthConcur,
+		LatencySamples:       *latencySamples,
 	}
 
 	var t, err = speedtest.NewTest(options)

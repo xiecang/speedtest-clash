@@ -74,8 +74,9 @@ type proxyTest struct {
 }
 
 func newProxyTest(name string, proxy C.Proxy, option *models.Options) *proxyTest {
-	timeout := option.Timeout
-	client := requests.GetClient(proxy, timeout)
+	// Use 0 timeout for the client and rely on the context for timeouts.
+	// This is more flexible for bandwidth and latency testing.
+	client := requests.GetClient(proxy, 0)
 	return &proxyTest{
 		name:   name,
 		option: option,
@@ -167,6 +168,9 @@ func (s *proxyTest) testBandwidth(ctx context.Context) (time.Duration, float64, 
 	}
 
 	if totalBytes == 0 {
+		if downloadErr != nil {
+			return avgTTFB, 0, fmt.Errorf("no data downloaded: %v", downloadErr)
+		}
 		return avgTTFB, 0, fmt.Errorf("no data downloaded")
 	}
 
@@ -187,6 +191,11 @@ func (s *proxyTest) testURL(ctx context.Context, url string, tryCount int) (uint
 	results := make(chan urlResult, tryCount)
 	var wg sync.WaitGroup
 
+	latencySamples := s.option.LatencySamples
+	if latencySamples <= 0 {
+		latencySamples = 3
+	}
+
 loop:
 	for i := 0; i < tryCount; i++ {
 		// Stagger probe launches slightly to reduce instantaneous burst noise in high concurrency
@@ -197,19 +206,64 @@ loop:
 		}
 
 		wg.Add(1)
-		go func(ctx context.Context, url string) {
+		go func(i int) {
 			defer wg.Done()
+			var (
+				successSamples int
+				sumDelay       int64
+				lastErr        error
+				probeStart     = time.Now()
+			)
+
 			expectedStatus, _ := utils.NewUnsignedRanges[uint16]("200,204")
-			start := time.Now()
-			d, err := s.proxy.URLTest(ctx, url, expectedStatus)
-			results <- urlResult{
-				url:      url,
-				delay:    d,
-				duration: time.Since(start),
-				err:      err,
-				ok:       err == nil && d > 0,
+
+			for j := 0; j < latencySamples; j++ {
+				if ctx.Err() != nil {
+					break
+				}
+				start := time.Now()
+				req, _ := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+				req.Header.Set("User-Agent", convert.RandUserAgent())
+				resp, err := s.client.Do(req)
+				if err != nil {
+					lastErr = err
+					break
+				}
+				resp.Body.Close()
+
+				if !expectedStatus.Check(uint16(resp.StatusCode)) {
+					lastErr = fmt.Errorf("status code: %d", resp.StatusCode)
+					break
+				}
+
+				delay := uint16(time.Since(start).Milliseconds())
+
+				// If LatencySamples > 1, the first request establishes the connection (TCP/TLS handshake).
+				// We skip it for the "Delay" calculation to get the true network latency on an established connection.
+				if latencySamples > 1 && j == 0 {
+					continue
+				}
+
+				successSamples++
+				sumDelay += int64(delay)
 			}
-		}(ctx, url)
+
+			if successSamples > 0 {
+				avg := uint16(sumDelay / int64(successSamples))
+				results <- urlResult{
+					url:      url,
+					delay:    avg,
+					duration: time.Since(probeStart),
+					ok:       true,
+				}
+			} else {
+				results <- urlResult{
+					url: url,
+					err: lastErr,
+					ok:  false,
+				}
+			}
+		}(i)
 	}
 
 	wg.Wait()
@@ -238,9 +292,15 @@ loop:
 		// Last-ditch effort: If all parallel probes failed (perhaps due to concurrency noise),
 		// try one sequential probe to confirm "Dead" status.
 		expectedStatus, _ := utils.NewUnsignedRanges[uint16]("200,204")
-		d, err := s.proxy.URLTest(ctx, url, expectedStatus)
-		if err == nil && d > 0 {
-			return d, 0, 0.0, nil
+		start := time.Now()
+		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		req.Header.Set("User-Agent", convert.RandUserAgent())
+		resp, err := s.client.Do(req)
+		if err == nil {
+			resp.Body.Close()
+			if expectedStatus.Check(uint16(resp.StatusCode)) {
+				return uint16(time.Since(start).Milliseconds()), 0, 0.0, nil
+			}
 		}
 		return 0, 0, 1.0, lastErr
 	}
