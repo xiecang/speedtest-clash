@@ -21,6 +21,7 @@ var (
 	output             = flag.String("output", "", "output result to csv/yaml file")
 	bandwidthConcur    = flag.Int("concurrent-bandwidth", 4, "concurrency for bandwidth testing")
 	latencySamples     = flag.Int("latency-samples", 1, "samples for latency testing after connection established")
+	delayUrl           = flag.String("delay-url", "", "URL to use for latency testing")
 )
 
 func main() {
@@ -39,6 +40,7 @@ func main() {
 		SortField:            models.SortField(*sortField),
 		BandwidthConcurrency: *bandwidthConcur,
 		LatencySamples:       *latencySamples,
+		DelayTestUrl:         *delayUrl,
 	}
 
 	var t, err = speedtest.NewTest(options)

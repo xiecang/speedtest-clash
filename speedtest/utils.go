@@ -5,6 +5,7 @@ import (
 	"encoding/csv"
 	"fmt"
 	"io"
+	"math/rand"
 	"net/http"
 	"os"
 	"strconv"
@@ -18,10 +19,6 @@ import (
 	"github.com/xiecang/speedtest-clash/speedtest/models"
 	"github.com/xiecang/speedtest-clash/speedtest/requests"
 	"gopkg.in/yaml.v3"
-)
-
-var (
-	delayTestUrl = "https://cp.cloudflare.com/generate_204"
 )
 
 func testspeed(ctx context.Context, proxy models.CProxy, options *models.Options) (*models.CProxyWithResult, error) {
@@ -199,10 +196,12 @@ func (s *proxyTest) testURL(ctx context.Context, url string, tryCount int) (uint
 loop:
 	for i := 0; i < tryCount; i++ {
 		// Stagger probe launches slightly to reduce instantaneous burst noise in high concurrency
-		select {
-		case <-time.After(time.Duration(i*10) * time.Millisecond):
-		case <-ctx.Done():
-			break loop
+		if i > 0 {
+			select {
+			case <-time.After(time.Duration(5+rand.Intn(6)) * time.Millisecond):
+			case <-ctx.Done():
+				break loop
+			}
 		}
 
 		wg.Add(1)
@@ -213,12 +212,15 @@ loop:
 				sumDelay       int64
 				lastErr        error
 				probeStart     = time.Now()
+				firstDelay     uint16
+				hasFirst       bool
 			)
 
 			expectedStatus, _ := utils.NewUnsignedRanges[uint16]("200,204")
 
 			for j := 0; j < latencySamples; j++ {
 				if ctx.Err() != nil {
+					lastErr = ctx.Err()
 					break
 				}
 				start := time.Now()
@@ -238,14 +240,26 @@ loop:
 
 				delay := uint16(time.Since(start).Milliseconds())
 
+				if j == 0 {
+					firstDelay = delay
+					hasFirst = true
+				}
+
 				// If LatencySamples > 1, the first request establishes the connection (TCP/TLS handshake).
-				// We skip it for the "Delay" calculation to get the true network latency on an established connection.
+				// We skip it from the average if we can successfully get more samples on the established link.
 				if latencySamples > 1 && j == 0 {
 					continue
 				}
 
 				successSamples++
 				sumDelay += int64(delay)
+			}
+
+			// Robustness fallback: if first request worked but avg samples failed (e.g. timeout during 2nd req),
+			// use the first request as result instead of marking dead.
+			if successSamples == 0 && hasFirst {
+				successSamples = 1
+				sumDelay = int64(firstDelay)
 			}
 
 			if successSamples > 0 {
@@ -327,7 +341,7 @@ loop:
 }
 
 func (s *proxyTest) testDelay(ctx context.Context) (uint16, uint16, float64) {
-	d, jitter, loss, _ := s.testURL(ctx, delayTestUrl, 3)
+	d, jitter, loss, _ := s.testURL(ctx, s.option.DelayTestUrl, 3)
 	return d, jitter, loss
 }
 

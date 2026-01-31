@@ -567,6 +567,9 @@ func checkOptions(options *models.Options) (bool, string) {
 	if options.Concurrent == 0 {
 		options.Concurrent = cpuCount * 3
 	}
+	if options.DelayTestUrl == "" {
+		options.DelayTestUrl = "https://cp.cloudflare.com/generate_204"
+	}
 
 	return true, ""
 }
