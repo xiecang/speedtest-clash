@@ -3,11 +3,12 @@ package main
 import (
 	"context"
 	"flag"
+	"strings"
+	"time"
+
 	"github.com/phuslu/log"
 	"github.com/xiecang/speedtest-clash/speedtest"
 	"github.com/xiecang/speedtest-clash/speedtest/models"
-	"strings"
-	"time"
 )
 
 var (
@@ -18,6 +19,7 @@ var (
 	timeoutConfig      = flag.Duration("timeout", time.Second*5, "timeout for testing proxies")
 	sortField          = flag.String("sort", "b", "sort field for testing proxies, b for bandwidth, t for TTFB")
 	output             = flag.String("output", "", "output result to csv/yaml file")
+	bandwidthConcur    = flag.Int("concurrent-bandwidth", 4, "concurrency for bandwidth testing")
 )
 
 func main() {
@@ -28,12 +30,13 @@ func main() {
 	}
 
 	var options = models.Options{
-		LivenessAddr:     *livenessObject,
-		DownloadSize:     *downloadSizeConfig,
-		Timeout:          *timeoutConfig,
-		ConfigPath:       *configPathConfig,
-		NameRegexContain: *filterRegexConfig,
-		SortField:        models.SortField(*sortField),
+		LivenessAddr:         *livenessObject,
+		DownloadSize:         *downloadSizeConfig,
+		Timeout:              *timeoutConfig,
+		ConfigPath:           *configPathConfig,
+		NameRegexContain:     *filterRegexConfig,
+		SortField:            models.SortField(*sortField),
+		BandwidthConcurrency: *bandwidthConcur,
 	}
 
 	var t, err = speedtest.NewTest(options)

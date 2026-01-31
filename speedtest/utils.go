@@ -39,7 +39,11 @@ func testspeed(ctx context.Context, proxy models.CProxy, options *models.Options
 	)
 	switch tp {
 	case C.Shadowsocks, C.ShadowsocksR, C.Snell, C.Socks5, C.Http, C.Vmess, C.Vless, C.Trojan, C.Hysteria, C.Hysteria2, C.WireGuard, C.Tuic:
-		result := TestProxy(ctx, key, proxy, options)
+		name := key
+		if n, ok := proxy.SecretConfig["name"].(string); ok && n != "" {
+			name = n
+		}
+		result := TestProxy(ctx, name, proxy, options)
 		if result == nil {
 			return nil, fmt.Errorf("test proxy returned nil result")
 		}
@@ -85,8 +89,12 @@ func (s *proxyTest) testBandwidth(ctx context.Context) (time.Duration, float64, 
 		client       = s.client
 		url          = s.option.LivenessAddr
 		downloadSize = s.option.DownloadSize
-		concurrency  = 4 // Default concurrency for bandwidth test
+		concurrency  = s.option.BandwidthConcurrency
 	)
+
+	if concurrency <= 0 {
+		concurrency = 4
+	}
 
 	if downloadSize <= 0 {
 		downloadSize = 10 * 1024 * 1024 // 默认 10M
@@ -325,7 +333,7 @@ func (s *proxyTest) Test(ctx context.Context) *models.Result {
 		wg           sync.WaitGroup
 	)
 
-	// 1. 带宽测试 (受全局 semaphore 限制)
+	// 1. 带宽测试
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
