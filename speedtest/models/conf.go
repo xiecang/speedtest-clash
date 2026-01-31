@@ -16,6 +16,8 @@ type Result struct {
 	Bandwidth    float64         `json:"bandwidth"` // 带宽，单位为 Kbps
 	TTFB         time.Duration   `json:"TTFB"`
 	Delay        uint16          `json:"delay"`
+	Jitter       uint16          `json:"jitter"`    // 抖动 (ms)
+	LossRate     float64         `json:"loss_rate"` // 丢包率 (0.0-1.0)
 	Country      string          `json:"country"`
 	CheckResults []CheckResult   `json:"check_results"`
 	URLForTest   map[string]bool `json:"url_for_test"`

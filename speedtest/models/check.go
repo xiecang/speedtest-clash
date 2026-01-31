@@ -2,6 +2,7 @@ package models
 
 import (
 	"context"
+
 	"github.com/metacubex/mihomo/constant"
 )
 
@@ -19,7 +20,7 @@ const (
 
 type CheckResult struct {
 	OK    bool      `json:"ok"`
-	Value string    `json:"value"`
+	Value string    `json:"value,omitempty"`
 	Type  CheckType `json:"type"`
 }
 

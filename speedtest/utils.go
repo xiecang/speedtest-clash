@@ -3,7 +3,6 @@ package speedtest
 import (
 	"context"
 	"encoding/csv"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -86,68 +85,121 @@ func (s *proxyTest) testBandwidth(ctx context.Context) (time.Duration, float64, 
 		client       = s.client
 		url          = s.option.LivenessAddr
 		downloadSize = s.option.DownloadSize
+		concurrency  = 4 // Default concurrency for bandwidth test
 	)
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return 0, 0, fmt.Errorf("create request failed, err: %v", err)
+	if downloadSize <= 0 {
+		downloadSize = 10 * 1024 * 1024 // 默认 10M
 	}
-	req.Header.Set("User-Agent", convert.RandUserAgent())
-	start := time.Now()
-	resp, err := client.Do(req)
-	if err != nil {
-		return 0, 0, fmt.Errorf("connect test domain failed, err: %v", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode-http.StatusOK > 100 {
-		return 0, 0, fmt.Errorf("test domain status not ok, status_code=%d", resp.StatusCode)
-	}
-	ttfb := time.Since(start)
 
-	limitedReader := io.LimitReader(resp.Body, int64(downloadSize))
-	written, err := io.Copy(io.Discard, limitedReader)
-	if err != nil {
-		return 0, 0, fmt.Errorf("failed to read response body: %w", err)
-	}
-	if written == 0 {
-		return 0, 0, fmt.Errorf("test domain return empty body")
-	}
-	downloadTime := time.Since(start) - ttfb
-	if downloadTime <= 0 {
-		return 0, 0, fmt.Errorf("invalid download time")
-	}
-	bandwidth := (float64(written) * 8) / downloadTime.Seconds() / 1e3 // 转换为 Kbps
+	// Now run multi-threaded download to measure bandwidth and sample TTFB
+	var (
+		wg          sync.WaitGroup
+		totalBytes  int64
+		ttfbSamples []time.Duration
+		mu          sync.Mutex
+		chunkSize   = int64(downloadSize / concurrency)
+		downloadErr error
+	)
 
-	return ttfb, bandwidth, nil
+	bandwidthStart := time.Now()
+	for i := 0; i < concurrency; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+			if err != nil {
+				return
+			}
+			req.Header.Set("User-Agent", convert.RandUserAgent())
+
+			start := time.Now()
+			resp, err := client.Do(req)
+			if err != nil {
+				mu.Lock()
+				downloadErr = err
+				mu.Unlock()
+				return
+			}
+			defer resp.Body.Close()
+
+			ttfb := time.Since(start)
+			mu.Lock()
+			ttfbSamples = append(ttfbSamples, ttfb)
+			mu.Unlock()
+
+			if resp.StatusCode >= 400 {
+				mu.Lock()
+				downloadErr = fmt.Errorf("status code: %d", resp.StatusCode)
+				mu.Unlock()
+				return
+			}
+
+			n, _ := io.Copy(io.Discard, io.LimitReader(resp.Body, chunkSize))
+			mu.Lock()
+			totalBytes += n
+			mu.Unlock()
+		}()
+	}
+
+	wg.Wait()
+	downloadTime := time.Since(bandwidthStart)
+
+	var avgTTFB time.Duration
+	if len(ttfbSamples) > 0 {
+		var totalTTFB time.Duration
+		for _, t := range ttfbSamples {
+			totalTTFB += t
+		}
+		avgTTFB = totalTTFB / time.Duration(len(ttfbSamples))
+	}
+
+	if downloadErr != nil && totalBytes == 0 {
+		return avgTTFB, 0, fmt.Errorf("download failed: %v", downloadErr)
+	}
+
+	if totalBytes == 0 {
+		return avgTTFB, 0, fmt.Errorf("no data downloaded")
+	}
+
+	bandwidth := (float64(totalBytes) * 8) / downloadTime.Seconds() / 1e3 // Kbps
+
+	return avgTTFB, bandwidth, nil
 }
 
 type urlResult struct {
-	url   string
-	delay uint16
-	err   error
-	ok    bool
+	url      string
+	delay    uint16
+	duration time.Duration
+	err      error
+	ok       bool
 }
 
-func (s *proxyTest) testURL(ctx context.Context, url string, tryCount int) *urlResult {
+func (s *proxyTest) testURL(ctx context.Context, url string, tryCount int) (uint16, uint16, float64, error) {
 	results := make(chan urlResult, tryCount)
 	var wg sync.WaitGroup
 
+loop:
 	for i := 0; i < tryCount; i++ {
+		// Stagger probe launches slightly to reduce instantaneous burst noise in high concurrency
+		select {
+		case <-time.After(time.Duration(i*10) * time.Millisecond):
+		case <-ctx.Done():
+			break loop
+		}
+
 		wg.Add(1)
 		go func(ctx context.Context, url string) {
 			defer wg.Done()
-			//	200,204
-			expectedStatus, err := utils.NewUnsignedRanges[uint16]("200,204")
-			if err != nil {
-				results <- urlResult{url: url, delay: 0, err: err, ok: false}
-				return
-			}
+			expectedStatus, _ := utils.NewUnsignedRanges[uint16]("200,204")
+			start := time.Now()
 			d, err := s.proxy.URLTest(ctx, url, expectedStatus)
 			results <- urlResult{
-				url:   url,
-				delay: d,
-				err:   err,
-				ok:    err == nil && d > 0,
+				url:      url,
+				delay:    d,
+				duration: time.Since(start),
+				err:      err,
+				ok:       err == nil && d > 0,
 			}
 		}(ctx, url)
 	}
@@ -155,47 +207,60 @@ func (s *proxyTest) testURL(ctx context.Context, url string, tryCount int) *urlR
 	wg.Wait()
 	close(results)
 
-	m := uint16(0xFFFF)
 	var (
-		err1 = fmt.Errorf("failed")
-		err  = err1
-		ok   bool
+		successCount int
+		minDelay     = uint16(0xFFFF)
+		delays       []uint16
+		lastErr      error
 	)
+
 	for r := range results {
-		if r.err == nil {
-			err = nil
-		} else if errors.Is(err, err1) {
-			err = r.err
-		}
 		if r.ok {
-			ok = true
-		}
-		d := r.delay
-		if d > 0 && d < m {
-			m = d
+			successCount++
+			delays = append(delays, r.delay)
+			if r.delay < minDelay {
+				minDelay = r.delay
+			}
+		} else {
+			lastErr = r.err
 		}
 	}
-	if m == 0xFFFF || err != nil {
-		return &urlResult{
-			url:   url,
-			delay: 0,
-			err:   err,
-			ok:    ok,
+
+	if successCount == 0 {
+		// Last-ditch effort: If all parallel probes failed (perhaps due to concurrency noise),
+		// try one sequential probe to confirm "Dead" status.
+		expectedStatus, _ := utils.NewUnsignedRanges[uint16]("200,204")
+		d, err := s.proxy.URLTest(ctx, url, expectedStatus)
+		if err == nil && d > 0 {
+			return d, 0, 0.0, nil
 		}
-	} else {
-		err = nil
+		return 0, 0, 1.0, lastErr
 	}
-	return &urlResult{
-		url:   url,
-		delay: m,
-		err:   err,
-		ok:    ok,
+
+	// Calculate Jitter (Average deviation from mean)
+	var sumDelay uint32
+	for _, d := range delays {
+		sumDelay += uint32(d)
 	}
+	avgDelay := float64(sumDelay) / float64(successCount)
+
+	var sumDev float64
+	for _, d := range delays {
+		dev := float64(d) - avgDelay
+		if dev < 0 {
+			dev = -dev
+		}
+		sumDev += dev
+	}
+	jitter := uint16(sumDev / float64(successCount))
+	lossRate := 1.0 - (float64(successCount) / float64(tryCount))
+
+	return minDelay, jitter, lossRate, nil
 }
 
-func (s *proxyTest) testDelay(ctx context.Context) uint16 {
-	r := s.testURL(ctx, delayTestUrl, 3)
-	return r.delay
+func (s *proxyTest) testDelay(ctx context.Context) (uint16, uint16, float64) {
+	d, jitter, loss, _ := s.testURL(ctx, delayTestUrl, 3)
+	return d, jitter, loss
 }
 
 func (s *proxyTest) testURLAvailable(ctx context.Context, urls []string) map[string]bool {
@@ -209,7 +274,12 @@ func (s *proxyTest) testURLAvailable(ctx context.Context, urls []string) map[str
 	for _, url := range urls {
 		go func(url string) {
 			defer wg.Done()
-			results <- s.testURL(ctx, url, 3)
+			d, _, _, okErr := s.testURL(ctx, url, 3)
+			results <- &urlResult{
+				url:   url,
+				delay: d,
+				ok:    okErr == nil && d > 0,
+			}
 		}(url)
 	}
 
@@ -232,84 +302,91 @@ func (s *proxyTest) Test(ctx context.Context) *models.Result {
 		URLForTest = option.URLForTest
 	)
 
-	ttfb, bandwidth, err := s.testBandwidth(ctx)
-	if err != nil {
-		log.Debugln("[%s] 带宽测试失败，错误: %v", name, err)
-		return &models.Result{Name: name}
+	// 优先测试延迟和丢包率，实现快速失败
+	delay, jitter, lossRate := s.testDelay(ctx)
+	if delay == 0 || lossRate >= 1.0 {
+		log.Debugln("[%s] 节点不可用 (Delay: %v, Loss: %.2f), 跳过后续测试", name, delay, lossRate)
+		return &models.Result{
+			Name:     name,
+			Delay:    delay,
+			Jitter:   jitter,
+			LossRate: lossRate,
+		}
 	}
 
 	var (
 		country      string
 		checkResults []models.CheckResult
 		urlResults   map[string]bool
-		delay        uint16
+		ttfb         time.Duration
+		bandwidth    float64
+		bandwidthErr error
+		mu           sync.Mutex
+		wg           sync.WaitGroup
 	)
-	var wg sync.WaitGroup
-	countryCh := make(chan string, 1)
-	checkCh := make(chan []models.CheckResult, 1)
-	urlCh := make(chan map[string]bool, 1)
-	delayCh := make(chan uint16, 1)
 
-	if ttfb > 0 && bandwidth > 0 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			countryR := checkProxy(ctx, proxy, []models.CheckType{models.CheckTypeCountry})
-			if len(countryR) > 0 {
-				countryCh <- countryR[0].Value
-			} else {
-				countryCh <- ""
-			}
-		}()
-		//
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			checkCh <- checkProxy(ctx, proxy, checkTypes)
-		}()
-		//
-		if URLForTest != nil {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				urlCh <- s.testURLAvailable(ctx, URLForTest)
-			}()
+	// 1. 带宽测试 (受全局 semaphore 限制)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		t, b, err := s.testBandwidth(ctx)
+		mu.Lock()
+		ttfb, bandwidth, bandwidthErr = t, b, err
+		mu.Unlock()
+	}()
+
+	// 2. 国家/地区检查
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		countryR := checkProxy(ctx, proxy, []models.CheckType{models.CheckTypeCountry})
+		mu.Lock()
+		if len(countryR) > 0 {
+			country = countryR[0].Value
 		}
-		//
+		mu.Unlock()
+	}()
+
+	// 3. 其它类型检查 (Netflix, Disney+ etc.)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		results := checkProxy(ctx, proxy, checkTypes)
+		mu.Lock()
+		checkResults = results
+		mu.Unlock()
+	}()
+
+	// 4. URL 可用性检查
+	if URLForTest != nil {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			delayCh <- s.testDelay(ctx)
+			results := s.testURLAvailable(ctx, URLForTest)
+			mu.Lock()
+			urlResults = results
+			mu.Unlock()
 		}()
-
-		// 等待所有 goroutine 完成后关闭 channels
-		go func() {
-			wg.Wait()
-			close(countryCh)
-			close(checkCh)
-			close(urlCh)
-			close(delayCh)
-		}()
-	} else {
-		// 如果测速失败，立即关闭所有 channels
-		log.Debugln("[%s] 测速失败，TTFB: %v, Bandwidth: %.2f Kbps", name, ttfb, bandwidth)
-		close(countryCh)
-		close(checkCh)
-		close(urlCh)
-		close(delayCh)
 	}
 
-	for c := range countryCh {
-		country = c
+	// 等待所有异步测试完成 (遵守 ctx 超时)
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// 正常完成
+	case <-ctx.Done():
+		// 超时或取消，尽量保留已测得的部分数据
+		log.Debugln("[%s] 测试流程超时或取消", name)
+		<-done // 等待子协程清理并更新变量
 	}
-	for cr := range checkCh {
-		checkResults = cr
-	}
-	for ur := range urlCh {
-		urlResults = ur
-	}
-	for d := range delayCh {
-		delay = d
+
+	if bandwidthErr != nil {
+		log.Debugln("[%s] 带宽测试失败: %v", name, bandwidthErr)
 	}
 
 	if country == "" {
@@ -321,17 +398,17 @@ func (s *proxyTest) Test(ctx context.Context) *models.Result {
 		}
 	}
 
-	result := &models.Result{
+	return &models.Result{
 		Name:         name,
 		Bandwidth:    bandwidth,
 		TTFB:         ttfb,
 		Delay:        delay,
+		Jitter:       jitter,
+		LossRate:     lossRate,
 		Country:      country,
 		CheckResults: checkResults,
 		URLForTest:   urlResults,
 	}
-
-	return result
 }
 
 func TestProxy(ctx context.Context, name string, proxy C.Proxy, option *models.Options) *models.Result {
