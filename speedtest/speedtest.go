@@ -265,15 +265,44 @@ func (t *Test) loadProxiesFromOptions() {
 }
 
 func (t *Test) TestSpeed(ctx context.Context) ([]models.CProxyWithResult, error) {
+	resultsCh, err := t.TestSpeedStream(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	var results []models.CProxyWithResult
+	var aliveProxies []models.CProxyWithResult
+	for result := range resultsCh {
+		results = append(results, *result)
+		if result.Alive() {
+			aliveProxies = append(aliveProxies, *result)
+		}
+	}
+
+	t._testedSpeed = true
+	t.results = results
+	t.aliveProxies = aliveProxies
+	return t.results, nil
+}
+
+func (t *Test) TestSpeedStream(ctx context.Context) (<-chan *models.CProxyWithResult, error) {
 	// 检查是否已经在测速
 	if t.testing.Load() {
 		return nil, fmt.Errorf("测速正在进行中，请等待完成")
 	}
 
 	t.testing.Store(true)
-	defer t.testing.Store(false)
+
+	// 重置/初始化状态
+	t.proxiesCh = make(chan models.CProxy, cpuCount*10)
+	t.errCh = make(chan error, cpuCount*10)
+	atomic.StoreInt32(t.count, 0)
+	atomic.StoreInt32(t.totalCount, 0)
+	atomic.StoreInt32(t.invalidCount, 0)
+	atomic.StoreInt32(t.aliveCount, 0)
 
 	var wg sync.WaitGroup
+
 	if t.options.ConfigPath != "" {
 		t.ReadProxies(ctx, &wg, t.options.ConfigPath, t.proxyUrl)
 	}
@@ -285,7 +314,7 @@ func (t *Test) TestSpeed(ctx context.Context) ([]models.CProxyWithResult, error)
 
 	var (
 		maxConcurrency = t.options.Concurrent
-		resultsCh      = make(chan *models.CProxyWithResult, maxConcurrency*2)
+		resultsStream  = make(chan *models.CProxyWithResult, maxConcurrency*2)
 	)
 
 	var workerWg sync.WaitGroup
@@ -293,76 +322,79 @@ func (t *Test) TestSpeed(ctx context.Context) ([]models.CProxyWithResult, error)
 
 	// worker 处理
 	go func() {
-		for proxy := range t.proxiesCh {
-			if !t.proxyShouldKeep(proxy) {
-				atomic.AddInt32(t.count, 1)
-				continue
-			}
-			sem <- struct{}{}
-			workerWg.Add(1)
-			go func(p models.CProxy) {
-				defer func() {
-					if r := recover(); r != nil {
-						log.Errorln("worker panic: %v", r)
-					}
-					atomic.AddInt32(t.count, 1)
-					workerWg.Done()
-					<-sem
-				}()
-				// 使用传入的 ctx，testspeed 内部会处理超时
-				result, err := testspeed(ctx, p, t.options)
-				if err != nil {
-					log.Errorln("[%s] test speed err: %v", p.Name(), err)
-				}
-				if result != nil {
-					resultsCh <- result
-				}
-			}(proxy)
-		}
-		workerWg.Wait()
-		close(resultsCh)
-	}()
+		defer func() {
+			t.testing.Store(false)
+			close(resultsStream)
+		}()
 
-	go func() {
-		wg.Wait()
-		close(t.proxiesCh)
-		close(t.errCh)
-	}()
+		go func() {
+			wg.Wait()
+			close(t.proxiesCh)
+			close(t.errCh)
+		}()
 
-	var results []models.CProxyWithResult
-	var aliveProxies []models.CProxyWithResult
-	for {
-		select {
-		case <-ctx.Done():
-			return nil, fmt.Errorf("context.Canceled: %v", ctx.Err())
-		case err, ok := <-t.errCh:
-			if ok {
+		// 监听错误
+		go func() {
+			for err := range t.errCh {
 				log.Errorln("load proxies err: %s", err)
-				continue
 			}
-		case result, ok := <-resultsCh:
-			if !ok {
-				t._testedSpeed = true
-				t.results = results
-				t.aliveProxies = aliveProxies
-				return t.results, nil
-			}
-			if result != nil {
-				results = append(results, *result)
-				if result.Alive() {
-					aliveProxies = append(aliveProxies, *result)
-					atomic.AddInt32(t.aliveCount, 1)
-				} else {
-					// 注意：invalidCount 在 ParseProxy 失败时也会增加
-					// 这里只统计测速后无效的节点
-					atomic.AddInt32(t.invalidCount, 1)
+		}()
+
+		for {
+			select {
+			case <-ctx.Done():
+				log.Infoln("TestSpeedStream cancelled: %v", ctx.Err())
+				return
+			case proxy, ok := <-t.proxiesCh:
+				if !ok {
+					workerWg.Wait()
+					return
 				}
-			} else {
-				// result 为 nil 表示节点不支持测速或测速失败
-				atomic.AddInt32(t.invalidCount, 1)
+				if !t.proxyShouldKeep(proxy) {
+					atomic.AddInt32(t.count, 1)
+					continue
+				}
+
+				select {
+				case <-ctx.Done():
+					return
+				case sem <- struct{}{}:
+					workerWg.Add(1)
+					go func(p models.CProxy) {
+						defer func() {
+							if r := recover(); r != nil {
+								log.Errorln("worker panic: %v", r)
+							}
+							atomic.AddInt32(t.count, 1)
+							workerWg.Done()
+							<-sem
+						}()
+						// 使用传入的 ctx，testspeed 内部会处理超时
+						result, err := testspeed(ctx, p, t.options)
+						if err != nil {
+							log.Errorln("[%s] test speed err: %v", p.Name(), err)
+						}
+						if result != nil {
+							if result.Alive() {
+								atomic.AddInt32(t.aliveCount, 1)
+							} else {
+								atomic.AddInt32(t.invalidCount, 1)
+							}
+
+							select {
+							case <-ctx.Done():
+							case resultsStream <- result:
+							}
+						} else {
+							atomic.AddInt32(t.invalidCount, 1)
+						}
+					}(proxy)
+				}
 			}
 		}
-	}
+	}()
+
+	return resultsStream, nil
 }
 
 func (t *Test) TotalCount() int32 {
