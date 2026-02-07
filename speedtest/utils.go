@@ -207,6 +207,7 @@ loop:
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
+			log.Debugln("[%s] [%d] 开始探测 URL: %s", s.name, i, url)
 			var (
 				successSamples int
 				sumDelay       int64
@@ -229,16 +230,19 @@ loop:
 				resp, err := s.client.Do(req)
 				if err != nil {
 					lastErr = err
+					log.Debugln("[%s] [%d-%d] 探测失败: %v", s.name, i, j, err)
 					break
 				}
 				resp.Body.Close()
 
 				if !expectedStatus.Check(uint16(resp.StatusCode)) {
 					lastErr = fmt.Errorf("status code: %d", resp.StatusCode)
+					log.Debugln("[%s] [%d-%d] 状态码错误: %d", s.name, i, j, resp.StatusCode)
 					break
 				}
 
 				delay := uint16(time.Since(start).Milliseconds())
+				log.Debugln("[%s] [%d-%d] 探测完成: %dms", s.name, i, j, delay)
 
 				if j == 0 {
 					firstDelay = delay
@@ -305,6 +309,7 @@ loop:
 	if successCount == 0 {
 		// Last-ditch effort: If all parallel probes failed (perhaps due to concurrency noise),
 		// try one sequential probe to confirm "Dead" status.
+		log.Debugln("[%s] 并行探测全部失败, 尝试串行补偿探测: %s", s.name, url)
 		expectedStatus, _ := utils.NewUnsignedRanges[uint16]("200,204")
 		start := time.Now()
 		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
@@ -313,8 +318,13 @@ loop:
 		if err == nil {
 			resp.Body.Close()
 			if expectedStatus.Check(uint16(resp.StatusCode)) {
-				return uint16(time.Since(start).Milliseconds()), 0, 0.0, nil
+				delay := uint16(time.Since(start).Milliseconds())
+				log.Debugln("[%s] 补偿探测成功: %dms", s.name, delay)
+				return delay, 0, 0.0, nil
 			}
+			log.Debugln("[%s] 补偿探测状态码错误: %d", s.name, resp.StatusCode)
+		} else {
+			log.Debugln("[%s] 补偿探测失败: %v", s.name, err)
 		}
 		return 0, 0, 1.0, lastErr
 	}
@@ -336,6 +346,8 @@ loop:
 	}
 	jitter := uint16(sumDev / float64(successCount))
 	lossRate := 1.0 - (float64(successCount) / float64(tryCount))
+
+	log.Debugln("[%s] 探测结果汇总: Delay=%d, Jitter=%d, LossRate=%.2f", s.name, minDelay, jitter, lossRate)
 
 	return minDelay, jitter, lossRate, nil
 }
