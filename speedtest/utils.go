@@ -171,7 +171,7 @@ func (s *proxyTest) testBandwidth(ctx context.Context) (time.Duration, float64, 
 		return avgTTFB, 0, fmt.Errorf("no data downloaded")
 	}
 
-	bandwidth := (float64(totalBytes) * 8) / downloadTime.Seconds() / 1e3 // Kbps
+	bandwidth := float64(totalBytes) / downloadTime.Seconds() // B/s
 
 	return avgTTFB, bandwidth, nil
 }
@@ -543,7 +543,7 @@ func writeToCSV(filePath string, results []models.CProxyWithResult) error {
 	for _, result := range results {
 		line := []string{
 			result.Name,
-			fmt.Sprintf("%.2f", result.Bandwidth/1024),
+			fmt.Sprintf("%.2f", result.Bandwidth/(1024*1024)),
 			strconv.FormatInt(result.TTFB.Milliseconds(), 10),
 		}
 		err = csvWriter.Write(line)

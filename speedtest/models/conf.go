@@ -13,7 +13,7 @@ type CProxyWithResult struct {
 
 type Result struct {
 	Name         string          `json:"name"`
-	Bandwidth    float64         `json:"bandwidth"` // 带宽，单位为 Kbps
+	Bandwidth    float64         `json:"bandwidth"` // 带宽，单位为 B/s
 	TTFB         time.Duration   `json:"TTFB"`
 	Delay        uint16          `json:"delay"`
 	Jitter       uint16          `json:"jitter"`    // 抖动 (ms)
@@ -32,6 +32,10 @@ func (r *Result) FormattedBandwidth() string {
 	if v <= 0 {
 		return "N/A"
 	}
+	if v < 1024 {
+		return fmt.Sprintf("%.02fB/s", v)
+	}
+	v /= 1024
 	if v < 1024 {
 		return fmt.Sprintf("%.02fKB/s", v)
 	}
