@@ -611,11 +611,6 @@ func NewTest(options models.Options) (*Test, error) {
 		return nil, fmt.Errorf("配置格式不正确: %s", msg)
 	}
 
-	// 如果没有设置缓存，使用单例默认缓存
-	if options.Cache == nil {
-		options.Cache = GetDefaultCache()
-	}
-
 	var proxyUrl *url.URL
 	if options.ProxyUrl != "" {
 		var err error

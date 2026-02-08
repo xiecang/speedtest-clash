@@ -22,12 +22,15 @@ import (
 )
 
 func testspeed(ctx context.Context, proxy models.CProxy, options *models.Options) (*models.CProxyWithResult, error) {
-	// 生成缓存键
-	key := options.Cache.GenerateKey(&proxy)
+	var key string
+	if options.Cache != nil {
+		// 生成缓存键
+		key = options.Cache.GenerateKey(&proxy)
 
-	// 尝试从缓存获取
-	if cached, exists := options.Cache.Get(ctx, key); exists {
-		return cached, nil
+		// 尝试从缓存获取
+		if cached, exists := options.Cache.Get(ctx, key); exists {
+			return cached, nil
+		}
 	}
 
 	var (
@@ -49,9 +52,11 @@ func testspeed(ctx context.Context, proxy models.CProxy, options *models.Options
 			Proxy:  proxy,
 		}
 		// 存储到缓存
-		if err := options.Cache.Set(ctx, key, r); err != nil {
-			// 缓存失败不影响返回结果
-			log.Warnln("failed to cache result: %v", err)
+		if options.Cache != nil {
+			if err := options.Cache.Set(ctx, key, r); err != nil {
+				// 缓存失败不影响返回结果
+				log.Warnln("failed to cache result: %v", err)
+			}
 		}
 		return r, nil
 	case C.Direct, C.Reject, C.Relay, C.Selector, C.Fallback, C.URLTest, C.LoadBalance:
