@@ -6,6 +6,8 @@ import (
 	"strings"
 	"time"
 
+	mlog "github.com/metacubex/mihomo/log"
+
 	"github.com/phuslu/log"
 	"github.com/xiecang/speedtest-clash/speedtest"
 	"github.com/xiecang/speedtest-clash/speedtest/models"
@@ -16,7 +18,7 @@ var (
 	configPathConfig   = flag.String("c", "", "configuration file path, also support http(s) url")
 	filterRegexConfig  = flag.String("f", ".*", "filter proxies by name, use regexp")
 	downloadSizeConfig = flag.Int("size", 1024*1024*100, "download size for testing proxies")
-	timeoutConfig      = flag.Duration("timeout", time.Second*5, "timeout for testing proxies")
+	timeoutConfig      = flag.Duration("timeout", time.Second*30, "timeout for testing proxies")
 	sortField          = flag.String("sort", "b", "sort field for testing proxies, b for bandwidth, t for TTFB")
 	output             = flag.String("output", "", "output result to csv/yaml file")
 	bandwidthConcur    = flag.Int("concurrent-bandwidth", 4, "concurrency for bandwidth testing")
@@ -30,6 +32,7 @@ func main() {
 	if *configPathConfig == "" {
 		log.Fatal().Msgf("Please specify the configuration file")
 	}
+	mlog.SetLevel(mlog.SILENT)
 
 	var options = models.Options{
 		LivenessAddr:         *livenessObject,
@@ -41,12 +44,14 @@ func main() {
 		BandwidthConcurrency: *bandwidthConcur,
 		LatencySamples:       *latencySamples,
 		DelayTestUrl:         *delayUrl,
+		Progress:             models.ProgressConfig{PrintProgress: true},
 	}
 
 	var t, err = speedtest.NewTest(options)
 	if err != nil {
 		log.Fatal().Msgf("%v", err)
 	}
+	defer t.Close()
 	_, err = t.TestSpeed(context.Background())
 	if err != nil {
 		log.Fatal().Msgf("%v", err)

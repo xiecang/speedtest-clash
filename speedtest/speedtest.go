@@ -70,12 +70,32 @@ func (t *Test) checkAndLogProgress() {
 	if total > 0 {
 		percentage = float64(processed) / float64(total) * 100
 	}
-	fmt.Printf("[%s] 📊 进度: %d/%d (%.1f%%) | ✅ 有效: %d | ❌ 无效: %d\n",
-		now.Format("15:04:05"), processed, total, percentage, alive, invalid)
+
+	// 进度条视觉效果
+	const barWidth = 20
+	done := 0
+	if total > 0 {
+		done = int(float64(barWidth) * float64(processed) / float64(total))
+	}
+	if done > barWidth {
+		done = barWidth
+	}
+	bar := strings.Repeat("█", done) + strings.Repeat("░", barWidth-done)
+
+	// 使用 \r 回到行首，使用 \033[K 清除当前行光标后的内容
+	fmt.Printf("\r[%s] 📊 %s %d/%d (%.1f%%) | ✅ %d | ❌ %d\033[K",
+		now.Format("15:04:05"), bar, processed, total, percentage, alive, invalid)
 }
 
 func (t *Test) startAutoProgress() {
-	t.logTicker = time.NewTicker(3 * time.Second) // 每3秒输出一次
+	if !t.options.Progress.PrintProgress {
+		return
+	}
+	interval := t.options.Progress.ProgressInterval
+	if interval <= 0 {
+		interval = 3 * time.Second
+	}
+	t.logTicker = time.NewTicker(interval)
 	if t.stopChan == nil {
 		t.stopChan = make(chan struct{})
 	}
@@ -200,17 +220,7 @@ func (t *Test) loadProxies(ctx context.Context, wg *sync.WaitGroup, buf []byte, 
 			t.errCh <- err
 			return
 		}
-		atomic.AddInt32(t.totalCount, int32(len(proxyList)))
-		for _, p := range proxyList {
-			proxy, err := adapter.ParseProxy(p)
-			if err != nil {
-				atomic.AddInt32(t.invalidCount, 1)
-				log.Warnln("ParseProxy error: proxy %s", err)
-				continue
-			}
-
-			t.proxiesCh <- models.CProxy{Proxy: proxy, SecretConfig: p}
-		}
+		_ = t.AddProxies(proxyList)
 		return
 	}
 	if err := yaml.Unmarshal(buf, rawCfg); err != nil {
@@ -219,18 +229,8 @@ func (t *Test) loadProxies(ctx context.Context, wg *sync.WaitGroup, buf []byte, 
 	}
 	proxiesConfig := rawCfg.Proxies
 	providersConfig := rawCfg.Providers
-	atomic.AddInt32(t.totalCount, int32(len(proxiesConfig)))
 
-	for i, config := range proxiesConfig {
-		proxy, err := adapter.ParseProxy(config)
-		if err != nil {
-			atomic.AddInt32(t.invalidCount, 1)
-			log.Warnln("ParseProxy error: proxy %d: %s", i, err)
-			continue
-		}
-
-		t.proxiesCh <- models.CProxy{Proxy: proxy, SecretConfig: config}
-	}
+	_ = t.AddProxies(proxiesConfig)
 
 	for name, config := range providersConfig {
 		wg.Add(1)
@@ -250,18 +250,80 @@ func (t *Test) loadProxiesFromOptions() {
 	if len(t.options.Proxies) == 0 {
 		return
 	}
-	atomic.AddInt32(t.totalCount, int32(len(t.options.Proxies)))
 
-	for i, config := range t.options.Proxies {
-		proxy, err := adapter.ParseProxy(config)
-		if err != nil {
-			atomic.AddInt32(t.invalidCount, 1)
-			log.Warnln("ParseProxy error: proxy %d: %s", i, err)
-			continue
-		}
+	_ = t.AddProxies(t.options.Proxies)
+}
 
-		t.proxiesCh <- models.CProxy{Proxy: proxy, SecretConfig: config}
+func (t *Test) addProxyInternal(proxy models.CProxy) {
+	if !t.proxyShouldKeep(proxy) {
+		atomic.AddInt32(t.count, 1) // 即使不测速，也算作已处理
+		return
 	}
+	atomic.AddInt32(t.totalCount, 1)
+	t.proxiesCh <- proxy
+}
+
+// AddProxy 实时添加一个待测速节点
+func (t *Test) AddProxy(proxy models.CProxy) error {
+	if !t.testing.Load() {
+		return fmt.Errorf("测速未开始或已结束")
+	}
+	t.addProxyInternal(proxy)
+	return nil
+}
+
+// AddProxyConfig 实时添加一个待测速节点配置
+func (t *Test) AddProxyConfig(config map[string]any) error {
+	if !t.testing.Load() {
+		return fmt.Errorf("测速未开始或已结束")
+	}
+
+	// 优化：提前过滤，避免不必要的解析开销
+	if name, ok := config["name"].(string); ok && name != "" {
+		if (t.regexpNonContain != nil && t.regexpNonContain.MatchString(name)) ||
+			(t.regexpContain != nil && !t.regexpContain.MatchString(name)) {
+			// 如果被过滤了，依然需要增加已处理计数
+			atomic.AddInt32(t.count, 1)
+			return nil
+		}
+	}
+
+	proxy, err := adapter.ParseProxy(config)
+	if err != nil {
+		atomic.AddInt32(t.invalidCount, 1)
+		atomic.AddInt32(t.count, 1) // 解析失败也算处理过
+		log.Warnln("ParseProxy error: %s", err)
+		return err
+	}
+	t.addProxyInternal(models.CProxy{Proxy: proxy, SecretConfig: config})
+	return nil
+}
+
+// AddProxies 实时批量添加待测速节点配置
+func (t *Test) AddProxies(configs []map[string]any) error {
+	if !t.testing.Load() || len(configs) == 0 {
+		return nil
+	}
+
+	concurrency := runtime.GOMAXPROCS(0) * 2
+	if len(configs) < concurrency {
+		concurrency = len(configs)
+	}
+
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, concurrency)
+
+	for _, config := range configs {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(c map[string]any) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			_ = t.AddProxyConfig(c)
+		}(config)
+	}
+	wg.Wait()
+	return nil
 }
 
 func (t *Test) TestSpeed(ctx context.Context) ([]models.CProxyWithResult, error) {
@@ -329,8 +391,11 @@ func (t *Test) TestSpeedStream(ctx context.Context) (<-chan *models.CProxyWithRe
 
 		go func() {
 			wg.Wait()
-			close(t.proxiesCh)
-			close(t.errCh)
+			// 如果是普通测试流，在这里关闭。
+			// 如果用户想要完全手动控制，可能需要一个标志位。
+			// 目前这里还是默认自动关闭 initial loading。
+			// 我们增加一个安全的 Close 方法。
+			t.CloseProxies()
 		}()
 
 		// 监听错误
@@ -377,6 +442,11 @@ func (t *Test) TestSpeedStream(ctx context.Context) (<-chan *models.CProxyWithRe
 						if result != nil {
 							if result.Alive() {
 								atomic.AddInt32(t.aliveCount, 1)
+								if t.options.Progress.PrintRealTime {
+									// 先清除当前行（可能是进度条），再换行打印新结果
+									fmt.Printf("\r\033[K[%s] 🚀 测速完成: %-20s | 带宽: %-10s | 延迟: %-5d\n",
+										time.Now().Format("15:04:05"), result.Name, result.FormattedBandwidth(), result.Delay)
+								}
 							} else {
 								atomic.AddInt32(t.invalidCount, 1)
 							}
@@ -597,10 +667,13 @@ func checkOptions(options *models.Options) (bool, string) {
 		options.LivenessAddr = models.DefaultLivenessAddr
 	}
 	if options.Concurrent == 0 {
-		options.Concurrent = cpuCount * 3
+		options.Concurrent = cpuCount
 	}
 	if options.DelayTestUrl == "" {
 		options.DelayTestUrl = "https://i.ytimg.com/generate_204"
+	}
+	if options.Progress.ProgressInterval <= 0 {
+		options.Progress.ProgressInterval = 3 * time.Second
 	}
 
 	return true, ""
@@ -673,4 +746,16 @@ func (t *Test) Close() error {
 	}
 
 	return nil
+}
+
+func (t *Test) CloseProxies() {
+	if t.testing.Load() {
+		// 使用 once 确保只关闭一次，或者检查 channel 状态
+		// 这里简单处理，因为通常由 wg.Wait() 控制
+		defer func() {
+			recover() // 防止重复关闭 panic
+		}()
+		close(t.proxiesCh)
+		close(t.errCh)
+	}
 }

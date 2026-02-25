@@ -26,6 +26,12 @@ type Cache interface {
 	Close() error
 }
 
+type ProgressConfig struct {
+	PrintProgress    bool          `json:"print_progress"`    // 是否打印进度
+	ProgressInterval time.Duration `json:"progress_interval"` // 进度打印间隔
+	PrintRealTime    bool          `json:"print_real_time"`   // 是否实时打印测速结果
+}
+
 type Options struct {
 	LivenessAddr         string           `json:"liveness_addr"`          // 测速时调用的地址，可下载的任意地址
 	DownloadSize         int              `json:"download_size"`          // 测速时下载的文件大小，单位为 bit，默认下载10M
@@ -37,12 +43,13 @@ type Options struct {
 	URLForTest           []string         `json:"url_for_test"`           // 测试 URL 是否可访问
 	ProxyUrl             string           `json:"proxy_url"`              // ConfigPath 为网络链接时可使用指定代理下载
 	CheckTypes           []CheckType      `json:"check_types"`            // 检查节点可解锁的类型, 可用值请参考 CheckType
-	Concurrent           int              `json:"concurrent"`             // 测速的并发数，默认 CPU 数量*3
+	Concurrent           int              `json:"concurrent"`             // 测速的并发数，默认 CPU 数量
 	BandwidthConcurrency int              `json:"bandwidth_concurrency"`  // 带宽测速并发数
 	LatencySamples       int              `json:"latency_samples"`        // 建立连接后的延迟测试次数
 	DelayTestUrl         string           `json:"delay_test_url"`         // 延迟测试 URL
 	Cache                Cache            `json:"-"`                      // 缓存实现，不序列化
 	Proxies              []map[string]any `json:"-"`                      // 支持传入 proxy 配置来测速
+	Progress             ProgressConfig   `json:"progress"`               // 进度配置
 }
 
 type CProxy struct {
