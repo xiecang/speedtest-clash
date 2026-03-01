@@ -270,11 +270,11 @@ func (t *Test) loadProxiesFromOptions() {
 }
 
 func (t *Test) addProxyInternal(ctx context.Context, proxy models.CProxy) {
+	atomic.AddInt32(t.totalCount, 1) // 所有节点都计入总数
 	if !t.proxyShouldKeep(proxy) {
 		atomic.AddInt32(t.count, 1) // 即使不测速，也算作已处理
 		return
 	}
-	atomic.AddInt32(t.totalCount, 1)
 	select {
 	case <-ctx.Done():
 	case t.proxiesCh <- proxy:
@@ -300,7 +300,8 @@ func (t *Test) AddProxyConfig(ctx context.Context, config map[string]any) error 
 	if name, ok := config["name"].(string); ok && name != "" {
 		if (t.regexpNonContain != nil && t.regexpNonContain.MatchString(name)) ||
 			(t.regexpContain != nil && !t.regexpContain.MatchString(name)) {
-			// 如果被过滤了，依然需要增加已处理计数
+			// 如果被过滤了，依然需要增加总数和已处理计数
+			atomic.AddInt32(t.totalCount, 1)
 			atomic.AddInt32(t.count, 1)
 			return nil
 		}
@@ -308,6 +309,7 @@ func (t *Test) AddProxyConfig(ctx context.Context, config map[string]any) error 
 
 	proxy, err := adapter.ParseProxy(config)
 	if err != nil {
+		atomic.AddInt32(t.totalCount, 1) // 解析失败也计入总数
 		atomic.AddInt32(t.invalidCount, 1)
 		atomic.AddInt32(t.count, 1) // 解析失败也算处理过
 		log.Warnln("ParseProxy error: %s", err)
