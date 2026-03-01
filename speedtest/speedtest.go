@@ -159,23 +159,13 @@ func (t *Test) proxyShouldKeep(proxy models.CProxy) bool {
 	return true
 }
 
-func (t *Test) ReadProxies(ctx context.Context, wg *sync.WaitGroup, configPathConfig string, proxyUrl *url.URL, visited map[string]bool) {
-	if visited == nil {
-		visited = make(map[string]bool)
-	}
+func (t *Test) ReadProxies(ctx context.Context, wg *sync.WaitGroup, configPathConfig string, proxyUrl *url.URL) {
 	paths := strings.Split(configPathConfig, "|")
 	wg.Add(len(paths))
 
 	for _, configPath := range paths {
 		go func(configPath string) {
 			defer wg.Done()
-
-			if visited[configPath] {
-				log.Warnln("circular dependency detected for config: %s", configPath)
-				return
-			}
-			visited[configPath] = true
-
 			var body []byte
 			var err error
 			if strings.HasPrefix(configPath, "http") {
@@ -218,14 +208,14 @@ func (t *Test) ReadProxies(ctx context.Context, wg *sync.WaitGroup, configPathCo
 				}
 			}
 
-			t.loadProxies(ctx, wg, body, proxyUrl, visited)
+			t.loadProxies(ctx, wg, body, proxyUrl)
 
 		}(configPath)
 	}
 
 }
 
-func (t *Test) loadProxies(ctx context.Context, wg *sync.WaitGroup, buf []byte, proxyUrl *url.URL, visited map[string]bool) {
+func (t *Test) loadProxies(ctx context.Context, wg *sync.WaitGroup, buf []byte, proxyUrl *url.URL) {
 	rawCfg := &models.RawConfig{
 		Proxies: []map[string]any{},
 	}
@@ -265,7 +255,7 @@ func (t *Test) loadProxies(ctx context.Context, wg *sync.WaitGroup, buf []byte, 
 				log.Warnln("can not defined a provider called `%s`", provider.ReservedName)
 				return
 			}
-			t.ReadProxies(ctx, wg, config.Url, proxyUrl, visited)
+			t.ReadProxies(ctx, wg, config.Url, proxyUrl)
 		}(name, config)
 	}
 
@@ -398,7 +388,7 @@ func (t *Test) TestSpeedStream(ctx context.Context) (<-chan *models.CProxyWithRe
 	var wg sync.WaitGroup
 
 	if t.options.ConfigPath != "" {
-		t.ReadProxies(ctx, &wg, t.options.ConfigPath, t.proxyUrl, nil)
+		t.ReadProxies(ctx, &wg, t.options.ConfigPath, t.proxyUrl)
 	}
 	if len(t.options.Proxies) > 0 {
 		t.loadProxiesFromOptions()
