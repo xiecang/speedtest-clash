@@ -1,141 +1,160 @@
 package speedtest
 
 import (
-	"encoding/json"
-	"github.com/xiecang/speedtest-clash/speedtest/models"
-	"net/url"
-	"reflect"
+	"context"
 	"testing"
 	"time"
+
+	"github.com/metacubex/mihomo/log"
+	"github.com/stretchr/testify/assert"
+	"github.com/xiecang/speedtest-clash/speedtest/models"
 )
 
-func Test_TestSpeed(t *testing.T) {
-	type args struct {
-		proxy   map[string]interface{}
-		options *models.Options
-	}
+type mockCache struct {
+	results map[string]*models.CProxyWithResult
+}
+
+func (m *mockCache) Get(ctx context.Context, key string) (*models.CProxyWithResult, bool) {
+	res, ok := m.results[key]
+	return res, ok
+}
+
+func (m *mockCache) Set(ctx context.Context, key string, result *models.CProxyWithResult) error {
+	m.results[key] = result
+	return nil
+}
+
+func (m *mockCache) GenerateKey(proxy *models.CProxy) string {
+	return proxy.Name()
+}
+
+func (m *mockCache) Close() error { return nil }
+
+func TestTestSpeedTableDriven(t *testing.T) {
 	tests := []struct {
-		name    string
-		args    args
-		want    []Result
-		wantErr bool
+		name            string
+		proxies         []map[string]any
+		containRegex    string
+		nonContainRegex string
+		mockResults     map[string]*models.CProxyWithResult
+		wantAliveCount  int32
+		wantTotalCount  int32
 	}{
 		{
-			name: "ssr error",
-			args: args{
-				proxy: map[string]interface{}{
-					"cipher":         "aes-256-cfb",
-					"name":           "ssr",
-					"obfs":           "plain",
-					"obfs-param":     "",
-					"password":       "S7KwUu7yBy58S3Ga",
-					"port":           9042,
-					"protocol":       "origin",
-					"protocol-param": "",
-					"server":         "103.172.116.79",
-					"type":           "ssr",
-					"udp":            true,
-				},
-				options: &models.Options{
-					DownloadSize: 10 * 1024 * 1024,
-					Timeout:      5 * time.Second,
-					SortField:    models.SortFieldBandwidth,
-					LivenessAddr: models.DefaultLivenessAddr,
-				},
+			name: "Basic test - all alive",
+			proxies: []map[string]any{
+				{"name": "proxy1", "type": "ss", "server": "1.1.1.1", "port": 8388, "cipher": "aes-128-gcm", "password": "pass"},
+				{"name": "proxy2", "type": "ss", "server": "1.1.1.2", "port": 8388, "cipher": "aes-128-gcm", "password": "pass"},
 			},
-			want: []Result{
-				{
-					Name: "ssr",
-				},
+			mockResults: map[string]*models.CProxyWithResult{
+				"proxy1": {Result: models.Result{Name: "proxy1", Delay: 100}},
+				"proxy2": {Result: models.Result{Name: "proxy2", Delay: 200}},
 			},
+			wantAliveCount: 2,
+			wantTotalCount: 2,
 		},
 		{
-			name: "test url google",
-			args: args{
-				proxy: map[string]interface{}{
-					"name": "url-test",
-					// fill in the rest of the fields
-				},
-				options: &Options{
-					DownloadSize: 10 * 1024 * 1024,
-					Timeout:      5 * time.Second,
-					SortField:    models.SortFieldBandwidth,
-					LivenessAddr: models.DefaultLivenessAddr,
-					URLForTest:   []string{"https://www.google.com"},
-					CheckTypes: []models.CheckType{
-						models.CheckTypeGPTIOS,
-						models.CheckTypeGPTWeb,
-						models.CheckTypeGPTAndroid,
-					},
-				},
+			name: "Filter - contain regex",
+			proxies: []map[string]any{
+				{"name": "hk-01", "type": "ss", "server": "1.1.1.3", "port": 8388, "cipher": "aes-128-gcm", "password": "pass"},
+				{"name": "us-01", "type": "ss", "server": "1.1.1.4", "port": 8388, "cipher": "aes-128-gcm", "password": "pass"},
 			},
-			want: []Result{
-				{
-					Name: "url-test",
-				},
+			containRegex: "hk",
+			mockResults: map[string]*models.CProxyWithResult{
+				"hk-01": {Result: models.Result{Name: "hk-01", Delay: 100}},
 			},
+			wantAliveCount: 1,
+			wantTotalCount: 1,
+		},
+		{
+			name: "Filter - non-contain regex",
+			proxies: []map[string]any{
+				{"name": "hk-01", "type": "ss", "server": "1.1.1.5", "port": 8388, "cipher": "aes-128-gcm", "password": "pass"},
+				{"name": "us-01", "type": "ss", "server": "1.1.1.6", "port": 8388, "cipher": "aes-128-gcm", "password": "pass"},
+			},
+			nonContainRegex: "us",
+			mockResults: map[string]*models.CProxyWithResult{
+				"hk-01": {Result: models.Result{Name: "hk-01", Delay: 100}},
+			},
+			wantAliveCount: 1,
+			wantTotalCount: 1,
+		},
+		{
+			name: "Dead proxies",
+			proxies: []map[string]any{
+				{"name": "alive", "type": "ss", "server": "1.1.1.7", "port": 8388, "cipher": "aes-128-gcm", "password": "pass"},
+				{"name": "dead", "type": "ss", "server": "1.1.1.8", "port": 8388, "cipher": "aes-128-gcm", "password": "pass"},
+			},
+			mockResults: map[string]*models.CProxyWithResult{
+				"alive": {Result: models.Result{Name: "alive", Delay: 100}},
+				"dead":  {Result: models.Result{Name: "dead", Delay: 0}}, // Delay 0 means dead
+			},
+			wantAliveCount: 1,
+			wantTotalCount: 2,
 		},
 	}
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			bytes, err := json.Marshal(map[string]interface{}{
-				"proxies": []map[string]interface{}{tt.args.proxy},
-			})
-			if err != nil {
-				t.Errorf("Invalid proxy: %v", err)
-				return
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+
+			cache := &mockCache{results: tt.mockResults}
+			opts := models.Options{
+				Proxies:             tt.proxies,
+				Concurrent:          2,
+				Cache:               cache,
+				NameRegexContain:    tt.containRegex,
+				NameRegexNonContain: tt.nonContainRegex,
+				Timeout:             time.Second,
 			}
-			lps, err := loadProxies(bytes, nil)
-			if err != nil {
-				t.Errorf("Invalid proxy: %v", err)
-				return
-			}
-			got, err := TestSpeed(lps, tt.args.options)
-			if (err != nil) != tt.wantErr {
-				t.Errorf("TestSpeed() error = %v, wantErr %v", err, tt.wantErr)
-				return
-			}
-			if !reflect.DeepEqual(got, tt.want) {
-				t.Errorf("TestSpeed() got = %v, want %v", got, tt.want)
-			}
+
+			tester, err := NewTest(opts)
+			assert.NoError(t, err)
+			defer tester.Close()
+
+			results, err := tester.TestSpeed(ctx)
+			assert.NoError(t, err)
+
+			assert.Equal(t, tt.wantTotalCount, tester.TotalCount())
+			assert.Equal(t, tt.wantAliveCount, int32(len(tester.aliveProxies)))
+			assert.Equal(t, tt.wantTotalCount, int32(len(results)))
 		})
 	}
 }
 
-func TestReadProxies(t *testing.T) {
-	type args struct {
-		configPathConfig string
-		proxyUrl         string
-	}
+func TestTestSpeedWithFile(t *testing.T) {
+	log.SetLevel(log.DEBUG)
 	tests := []struct {
-		name    string
-		args    args
-		want    map[string]models.CProxy
-		wantErr bool
+		name       string
+		configPath string
 	}{
 		{
-			name: "test provider",
-			args: args{
-				configPathConfig: "test.yaml",
-				proxyUrl:         "http://127.0.0.1:7890",
-			},
+			name:       "Load from test.yaml",
+			configPath: "../test.yaml",
 		},
 	}
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			proxyUrl, err := url.Parse(tt.args.proxyUrl)
-			if (err != nil) != tt.wantErr {
-				t.Errorf("ReadProxies() Parse proxyUrl error = %v, wantErr %v", err, tt.wantErr)
-				return
+
+			opts := models.Options{
+				ConfigPath: tt.configPath,
+				Concurrent: 20,
+				Timeout:    30 * time.Second,
 			}
-			got, err := ReadProxies(tt.args.configPathConfig, proxyUrl)
-			if (err != nil) != tt.wantErr {
-				t.Errorf("ReadProxies() error = %v, wantErr %v", err, tt.wantErr)
-				return
-			}
-			if !reflect.DeepEqual(got, tt.want) {
-				t.Errorf("ReadProxies() got = %v, want %v", got, tt.want)
-			}
+
+			tester, err := NewTest(opts)
+			assert.NoError(t, err)
+			defer tester.Close()
+
+			results, err := tester.TestSpeed(context.Background())
+			assert.NoError(t, err)
+
+			t.Logf("results: %+v", results)
+			tester.LogNum()
+			tester.LogAlive()
+
 		})
 	}
 }

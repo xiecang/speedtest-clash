@@ -5,14 +5,15 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
-	"filippo.io/intermediates"
 	"fmt"
-	"github.com/metacubex/mihomo/log"
 	"io"
 	"net"
 	"net/http"
 	"net/url"
 	"time"
+
+	"filippo.io/intermediates"
+	"github.com/metacubex/mihomo/log"
 )
 
 type RequestOption struct {
@@ -73,7 +74,7 @@ func request(ctx context.Context, option *RequestOption) (*XcResponse, error) {
 		return nil, fmt.Errorf("checkedOption error: %w", err)
 	}
 	if option.Verbose {
-		log.Infoln(requestCurl(option))
+		log.Infoln("%s", requestCurl(option))
 	}
 
 	transport := &http.Transport{

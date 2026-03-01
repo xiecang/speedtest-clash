@@ -159,13 +159,23 @@ func (t *Test) proxyShouldKeep(proxy models.CProxy) bool {
 	return true
 }
 
-func (t *Test) ReadProxies(ctx context.Context, wg *sync.WaitGroup, configPathConfig string, proxyUrl *url.URL) {
+func (t *Test) ReadProxies(ctx context.Context, wg *sync.WaitGroup, configPathConfig string, proxyUrl *url.URL, visited map[string]bool) {
+	if visited == nil {
+		visited = make(map[string]bool)
+	}
 	paths := strings.Split(configPathConfig, "|")
 	wg.Add(len(paths))
 
 	for _, configPath := range paths {
 		go func(configPath string) {
 			defer wg.Done()
+
+			if visited[configPath] {
+				log.Warnln("circular dependency detected for config: %s", configPath)
+				return
+			}
+			visited[configPath] = true
+
 			var body []byte
 			var err error
 			if strings.HasPrefix(configPath, "http") {
@@ -181,12 +191,18 @@ func (t *Test) ReadProxies(ctx context.Context, wg *sync.WaitGroup, configPathCo
 				})
 				if err != nil {
 					log.Warnln("failed to fetch config: %s, err: %s", configPath, err)
-					t.errCh <- err
+					select {
+					case <-ctx.Done():
+					case t.errCh <- err:
+					}
 					return
 				}
 				if resp.StatusCode != http.StatusOK {
 					log.Warnln("failed to fetch config: %s, status code: %d", configPath, resp.StatusCode)
-					t.errCh <- fmt.Errorf("status code: %d", resp.StatusCode)
+					select {
+					case <-ctx.Done():
+					case t.errCh <- fmt.Errorf("status code: %d", resp.StatusCode):
+					}
 					return
 				}
 				body = resp.Body
@@ -194,19 +210,22 @@ func (t *Test) ReadProxies(ctx context.Context, wg *sync.WaitGroup, configPathCo
 				body, err = os.ReadFile(configPath)
 				if err != nil {
 					log.Warnln("failed to read local file: %s, err: %s", configPath, err)
-					t.errCh <- err
+					select {
+					case <-ctx.Done():
+					case t.errCh <- err:
+					}
 					return
 				}
 			}
 
-			t.loadProxies(ctx, wg, body, proxyUrl)
+			t.loadProxies(ctx, wg, body, proxyUrl, visited)
 
 		}(configPath)
 	}
 
 }
 
-func (t *Test) loadProxies(ctx context.Context, wg *sync.WaitGroup, buf []byte, proxyUrl *url.URL) {
+func (t *Test) loadProxies(ctx context.Context, wg *sync.WaitGroup, buf []byte, proxyUrl *url.URL, visited map[string]bool) {
 	rawCfg := &models.RawConfig{
 		Proxies: []map[string]any{},
 	}
@@ -217,20 +236,26 @@ func (t *Test) loadProxies(ctx context.Context, wg *sync.WaitGroup, buf []byte, 
 		}
 		proxyList, err := convert.ConvertsV2Ray(buf)
 		if err != nil {
-			t.errCh <- err
+			select {
+			case <-ctx.Done():
+			case t.errCh <- err:
+			}
 			return
 		}
-		_ = t.AddProxies(proxyList)
+		_ = t.AddProxies(ctx, proxyList)
 		return
 	}
 	if err := yaml.Unmarshal(buf, rawCfg); err != nil {
-		t.errCh <- err
+		select {
+		case <-ctx.Done():
+		case t.errCh <- err:
+		}
 		return
 	}
 	proxiesConfig := rawCfg.Proxies
 	providersConfig := rawCfg.Providers
 
-	_ = t.AddProxies(proxiesConfig)
+	_ = t.AddProxies(ctx, proxiesConfig)
 
 	for name, config := range providersConfig {
 		wg.Add(1)
@@ -240,7 +265,7 @@ func (t *Test) loadProxies(ctx context.Context, wg *sync.WaitGroup, buf []byte, 
 				log.Warnln("can not defined a provider called `%s`", provider.ReservedName)
 				return
 			}
-			t.ReadProxies(ctx, wg, config.Url, proxyUrl)
+			t.ReadProxies(ctx, wg, config.Url, proxyUrl, visited)
 		}(name, config)
 	}
 
@@ -251,29 +276,32 @@ func (t *Test) loadProxiesFromOptions() {
 		return
 	}
 
-	_ = t.AddProxies(t.options.Proxies)
+	_ = t.AddProxies(context.Background(), t.options.Proxies)
 }
 
-func (t *Test) addProxyInternal(proxy models.CProxy) {
+func (t *Test) addProxyInternal(ctx context.Context, proxy models.CProxy) {
 	if !t.proxyShouldKeep(proxy) {
 		atomic.AddInt32(t.count, 1) // 即使不测速，也算作已处理
 		return
 	}
 	atomic.AddInt32(t.totalCount, 1)
-	t.proxiesCh <- proxy
+	select {
+	case <-ctx.Done():
+	case t.proxiesCh <- proxy:
+	}
 }
 
 // AddProxy 实时添加一个待测速节点
-func (t *Test) AddProxy(proxy models.CProxy) error {
+func (t *Test) AddProxy(ctx context.Context, proxy models.CProxy) error {
 	if !t.testing.Load() {
 		return fmt.Errorf("测速未开始或已结束")
 	}
-	t.addProxyInternal(proxy)
+	t.addProxyInternal(ctx, proxy)
 	return nil
 }
 
 // AddProxyConfig 实时添加一个待测速节点配置
-func (t *Test) AddProxyConfig(config map[string]any) error {
+func (t *Test) AddProxyConfig(ctx context.Context, config map[string]any) error {
 	if !t.testing.Load() {
 		return fmt.Errorf("测速未开始或已结束")
 	}
@@ -295,12 +323,12 @@ func (t *Test) AddProxyConfig(config map[string]any) error {
 		log.Warnln("ParseProxy error: %s", err)
 		return err
 	}
-	t.addProxyInternal(models.CProxy{Proxy: proxy, SecretConfig: config})
+	t.addProxyInternal(ctx, models.CProxy{Proxy: proxy, SecretConfig: config})
 	return nil
 }
 
 // AddProxies 实时批量添加待测速节点配置
-func (t *Test) AddProxies(configs []map[string]any) error {
+func (t *Test) AddProxies(ctx context.Context, configs []map[string]any) error {
 	if !t.testing.Load() || len(configs) == 0 {
 		return nil
 	}
@@ -314,13 +342,17 @@ func (t *Test) AddProxies(configs []map[string]any) error {
 	sem := make(chan struct{}, concurrency)
 
 	for _, config := range configs {
-		wg.Add(1)
-		sem <- struct{}{}
-		go func(c map[string]any) {
-			defer wg.Done()
-			defer func() { <-sem }()
-			_ = t.AddProxyConfig(c)
-		}(config)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case sem <- struct{}{}:
+			wg.Add(1)
+			go func(c map[string]any) {
+				defer wg.Done()
+				defer func() { <-sem }()
+				_ = t.AddProxyConfig(ctx, c)
+			}(config)
+		}
 	}
 	wg.Wait()
 	return nil
@@ -366,7 +398,7 @@ func (t *Test) TestSpeedStream(ctx context.Context) (<-chan *models.CProxyWithRe
 	var wg sync.WaitGroup
 
 	if t.options.ConfigPath != "" {
-		t.ReadProxies(ctx, &wg, t.options.ConfigPath, t.proxyUrl)
+		t.ReadProxies(ctx, &wg, t.options.ConfigPath, t.proxyUrl, nil)
 	}
 	if len(t.options.Proxies) > 0 {
 		t.loadProxiesFromOptions()
@@ -443,9 +475,15 @@ func (t *Test) TestSpeedStream(ctx context.Context) (<-chan *models.CProxyWithRe
 							if result.Alive() {
 								atomic.AddInt32(t.aliveCount, 1)
 								if t.options.Progress.PrintRealTime {
+									processed := atomic.LoadInt32(t.count)
+									total := atomic.LoadInt32(t.totalCount)
+									var percentage float64
+									if total > 0 {
+										percentage = float64(processed) / float64(total) * 100
+									}
 									// 先清除当前行（可能是进度条），再换行打印新结果
-									fmt.Printf("\r\033[K[%s] 🚀 测速完成: %-20s | 带宽: %-10s | 延迟: %-5d\n",
-										time.Now().Format("15:04:05"), result.Name, result.FormattedBandwidth(), result.Delay)
+									fmt.Printf("\r\033[K[%s] 🚀 测速完成: %-20s | 带宽: %-10s | 延迟: %-5d | 进度: %.1f%%\n",
+										time.Now().Format("15:04:05"), result.Name, result.FormattedBandwidth(), result.Delay, percentage)
 								}
 							} else {
 								atomic.AddInt32(t.invalidCount, 1)
