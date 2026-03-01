@@ -482,8 +482,8 @@ func (t *Test) TestSpeedStream(ctx context.Context) (<-chan *models.CProxyWithRe
 										percentage = float64(processed) / float64(total) * 100
 									}
 									// 先清除当前行（可能是进度条），再换行打印新结果
-									fmt.Printf("\r\033[K[%s] 🚀 测速完成: %-20s | 带宽: %-10s | 延迟: %-5d | 进度: %.1f%%\n",
-										time.Now().Format("15:04:05"), result.Name, result.FormattedBandwidth(), result.Delay, percentage)
+									fmt.Printf("\r\033[K[%s] 🚀 测速完成: %-20s | 带宽: %-10s | 延迟: %-5d | 进度: %d/%d (%.1f%%)\n",
+										time.Now().Format("15:04:05"), result.Name, result.FormattedBandwidth(), result.Delay, processed, total, percentage)
 								}
 							} else {
 								atomic.AddInt32(t.invalidCount, 1)
