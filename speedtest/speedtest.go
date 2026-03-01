@@ -290,13 +290,8 @@ func (t *Test) AddProxy(ctx context.Context, proxy models.CProxy) error {
 	return nil
 }
 
-// AddProxyConfig 实时添加一个待测速节点配置
-func (t *Test) AddProxyConfig(ctx context.Context, config map[string]any) error {
-	if !t.testing.Load() {
-		return fmt.Errorf("测速未开始或已结束")
-	}
-	atomic.AddInt32(t.totalCount, 1)
-
+// addProxyConfig 实时添加一个待测速节点配置
+func (t *Test) addProxyConfig(ctx context.Context, config map[string]any) error {
 	// 优化：提前过滤，避免不必要的解析开销
 	if name, ok := config["name"].(string); ok && name != "" {
 		if (t.regexpNonContain != nil && t.regexpNonContain.MatchString(name)) ||
@@ -318,6 +313,15 @@ func (t *Test) AddProxyConfig(ctx context.Context, config map[string]any) error 
 	return nil
 }
 
+// AddProxyConfig 实时添加一个待测速节点配置
+func (t *Test) AddProxyConfig(ctx context.Context, config map[string]any) error {
+	if !t.testing.Load() {
+		return fmt.Errorf("测速未开始或已结束")
+	}
+	atomic.AddInt32(t.totalCount, 1)
+	return t.addProxyConfig(ctx, config)
+}
+
 // AddProxies 实时批量添加待测速节点配置
 func (t *Test) AddProxies(ctx context.Context, configs []map[string]any) error {
 	if !t.testing.Load() || len(configs) == 0 {
@@ -332,6 +336,8 @@ func (t *Test) AddProxies(ctx context.Context, configs []map[string]any) error {
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, concurrency)
 
+	atomic.AddInt32(t.totalCount, int32(len(configs)))
+
 	for _, config := range configs {
 		select {
 		case <-ctx.Done():
@@ -341,7 +347,7 @@ func (t *Test) AddProxies(ctx context.Context, configs []map[string]any) error {
 			go func(c map[string]any) {
 				defer wg.Done()
 				defer func() { <-sem }()
-				_ = t.AddProxyConfig(ctx, c)
+				_ = t.addProxyConfig(ctx, c)
 			}(config)
 		}
 	}
