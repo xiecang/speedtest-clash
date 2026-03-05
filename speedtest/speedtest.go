@@ -269,9 +269,10 @@ func (t *Test) loadProxiesFromOptions() {
 	_ = t.AddProxies(context.Background(), t.options.Proxies)
 }
 
-func (t *Test) addProxyInternal(ctx context.Context, proxy models.CProxy) {
+// processProxy 内部测速节点处理核心逻辑（计入已处理 count，但不计入总量 totalCount）
+func (t *Test) processProxy(ctx context.Context, proxy models.CProxy) {
 	if !t.proxyShouldKeep(proxy) {
-		atomic.AddInt32(t.count, 1) // 即使不测速，也算作已处理
+		atomic.AddInt32(t.count, 1) // 跳过的节点也算作已处理
 		return
 	}
 	select {
@@ -285,17 +286,18 @@ func (t *Test) AddProxy(ctx context.Context, proxy models.CProxy) error {
 	if !t.testing.Load() {
 		return fmt.Errorf("测速未开始或已结束")
 	}
-	t.addProxyInternal(ctx, proxy)
+	atomic.AddInt32(t.totalCount, 1) // 外部调用入口，统一在此增加总量
+	t.processProxy(ctx, proxy)
 	return nil
 }
 
-// addProxyConfig 实时添加一个待测速节点配置
-func (t *Test) addProxyConfig(ctx context.Context, config map[string]any) error {
+// processConfig 内部测速节点配置解析与处理逻辑（计入已处理/无效 count，但不计入总量 totalCount）
+func (t *Test) processConfig(ctx context.Context, config map[string]any) error {
 	// 优化：提前过滤，避免不必要的解析开销
 	if name, ok := config["name"].(string); ok && name != "" {
 		if (t.regexpNonContain != nil && t.regexpNonContain.MatchString(name)) ||
 			(t.regexpContain != nil && !t.regexpContain.MatchString(name)) {
-			// 如果被过滤了，依然需要增加已处理计数
+			// 如果被过滤了，增加已处理计数
 			atomic.AddInt32(t.count, 1)
 			return nil
 		}
@@ -315,17 +317,8 @@ func (t *Test) addProxyConfig(ctx context.Context, config map[string]any) error 
 		log.Warnln("ParseProxy error: %s", err)
 		return err
 	}
-	t.addProxyInternal(ctx, models.CProxy{Proxy: proxy, SecretConfig: config})
+	t.processProxy(ctx, models.CProxy{Proxy: proxy, SecretConfig: config})
 	return nil
-}
-
-// AddProxyConfig 实时添加一个待测速节点配置（外部单个调用时使用）
-func (t *Test) AddProxyConfig(ctx context.Context, config map[string]any) error {
-	if !t.testing.Load() {
-		return fmt.Errorf("测速未开始或已结束")
-	}
-	atomic.AddInt32(t.totalCount, 1) // 单个入口，在此处计入总数
-	return t.addProxyConfig(ctx, config)
 }
 
 // AddProxies 实时批量添加待测速节点配置
@@ -339,10 +332,10 @@ func (t *Test) AddProxies(ctx context.Context, configs []map[string]any) error {
 		concurrency = len(configs)
 	}
 
+	atomic.AddInt32(t.totalCount, int32(len(configs))) // 批量入口，提前计算总量
+
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, concurrency)
-
-	atomic.AddInt32(t.totalCount, int32(len(configs)))
 
 	for _, config := range configs {
 		select {
@@ -353,7 +346,7 @@ func (t *Test) AddProxies(ctx context.Context, configs []map[string]any) error {
 			go func(c map[string]any) {
 				defer wg.Done()
 				defer func() { <-sem }()
-				_ = t.addProxyConfig(ctx, c)
+				_ = t.processConfig(ctx, c)
 			}(config)
 		}
 	}
@@ -433,31 +426,19 @@ func (t *Test) TestSpeedStream(ctx context.Context) (<-chan *models.CProxyWithRe
 			t.CloseProxies()
 		}()
 
-		// 监听错误
-		go func() {
-			for err := range t.errCh {
-				log.Errorln("load proxies err: %s", err)
-			}
-		}()
-
 		for {
 			select {
 			case <-ctx.Done():
 				log.Infoln("TestSpeedStream cancelled: %v", ctx.Err())
-				return
+				goto waitAndExit
 			case proxy, ok := <-t.proxiesCh:
 				if !ok {
-					workerWg.Wait()
-					return
-				}
-				if !t.proxyShouldKeep(proxy) {
-					atomic.AddInt32(t.count, 1)
-					continue
+					goto waitAndExit
 				}
 
 				select {
 				case <-ctx.Done():
-					return
+					goto waitAndExit
 				case sem <- struct{}{}:
 					workerWg.Add(1)
 					go func(p models.CProxy) {
@@ -507,6 +488,8 @@ func (t *Test) TestSpeedStream(ctx context.Context) (<-chan *models.CProxyWithRe
 				}
 			}
 		}
+	waitAndExit:
+		workerWg.Wait()
 	}()
 
 	return resultsStream, nil

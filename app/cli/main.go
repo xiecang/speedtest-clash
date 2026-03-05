@@ -2,8 +2,12 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
+	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	mlog "github.com/metacubex/mihomo/log"
@@ -47,13 +51,20 @@ func main() {
 		Progress:             models.ProgressConfig{PrintProgress: true},
 	}
 
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
 	var t, err = speedtest.NewTest(options)
 	if err != nil {
 		log.Fatal().Msgf("%v", err)
 	}
 	defer t.Close()
-	_, err = t.TestSpeed(context.Background())
+	_, err = t.TestSpeed(ctx)
 	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			log.Info().Msg("Testing cancelled by user")
+			return
+		}
 		log.Fatal().Msgf("%v", err)
 	}
 

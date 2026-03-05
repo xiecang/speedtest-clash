@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -47,7 +46,7 @@ func filterAlive(w http.ResponseWriter, req *http.Request) {
 		resError(w, err)
 		return
 	}
-	_, err = t.TestSpeed(context.Background())
+	_, err = t.TestSpeed(req.Context())
 	if err != nil {
 		log.Errorln("test speed error: %v", err)
 		resError(w, err)

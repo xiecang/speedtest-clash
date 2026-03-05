@@ -39,6 +39,7 @@ func TestTestSpeedTableDriven(t *testing.T) {
 		mockResults     map[string]*models.CProxyWithResult
 		wantAliveCount  int32
 		wantTotalCount  int32
+		wantResultCount int32
 	}{
 		{
 			name: "Basic test - all alive",
@@ -50,8 +51,9 @@ func TestTestSpeedTableDriven(t *testing.T) {
 				"proxy1": {Result: models.Result{Name: "proxy1", Delay: 100}},
 				"proxy2": {Result: models.Result{Name: "proxy2", Delay: 200}},
 			},
-			wantAliveCount: 2,
-			wantTotalCount: 2,
+			wantAliveCount:  2,
+			wantTotalCount:  2,
+			wantResultCount: 2,
 		},
 		{
 			name: "Filter - contain regex",
@@ -63,8 +65,9 @@ func TestTestSpeedTableDriven(t *testing.T) {
 			mockResults: map[string]*models.CProxyWithResult{
 				"hk-01": {Result: models.Result{Name: "hk-01", Delay: 100}},
 			},
-			wantAliveCount: 1,
-			wantTotalCount: 1,
+			wantAliveCount:  1,
+			wantTotalCount:  2,
+			wantResultCount: 1,
 		},
 		{
 			name: "Filter - non-contain regex",
@@ -76,8 +79,9 @@ func TestTestSpeedTableDriven(t *testing.T) {
 			mockResults: map[string]*models.CProxyWithResult{
 				"hk-01": {Result: models.Result{Name: "hk-01", Delay: 100}},
 			},
-			wantAliveCount: 1,
-			wantTotalCount: 1,
+			wantAliveCount:  1,
+			wantTotalCount:  2,
+			wantResultCount: 1,
 		},
 		{
 			name: "Dead proxies",
@@ -89,8 +93,9 @@ func TestTestSpeedTableDriven(t *testing.T) {
 				"alive": {Result: models.Result{Name: "alive", Delay: 100}},
 				"dead":  {Result: models.Result{Name: "dead", Delay: 0}}, // Delay 0 means dead
 			},
-			wantAliveCount: 1,
-			wantTotalCount: 2,
+			wantAliveCount:  1,
+			wantTotalCount:  2,
+			wantResultCount: 2,
 		},
 	}
 
@@ -117,8 +122,10 @@ func TestTestSpeedTableDriven(t *testing.T) {
 			assert.NoError(t, err)
 
 			assert.Equal(t, tt.wantTotalCount, tester.TotalCount())
+			assert.Equal(t, tt.wantTotalCount, tester.ProcessCount()) // 处理完后 count 应该等于 totalCount
 			assert.Equal(t, tt.wantAliveCount, int32(len(tester.aliveProxies)))
-			assert.Equal(t, tt.wantTotalCount, int32(len(results)))
+			// results 只包含通过过滤且测速结果不为 nil 的节点
+			assert.Equal(t, tt.wantResultCount, int32(len(results)))
 		})
 	}
 }

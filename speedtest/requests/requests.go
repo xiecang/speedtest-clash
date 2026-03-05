@@ -147,7 +147,11 @@ func Request(ctx context.Context, option *RequestOption) (*XcResponse, error) {
 			if err := ctx.Err(); err != nil {
 				return nil, err
 			}
-			time.Sleep(timeout)
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(timeout):
+			}
 			var t = time.Second + timeout
 			timeout = t
 			resp, err = request(ctx, option)
