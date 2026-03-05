@@ -173,7 +173,7 @@ func (t *Test) ReadProxies(ctx context.Context, wg *sync.WaitGroup, configPathCo
 					Method:             http.MethodGet,
 					URL:                configPath,
 					Headers:            map[string]string{"User-Agent": "clash-meta"},
-					Timeout:            20 * time.Second,
+					Timeout:            60 * time.Second,
 					RetryTimes:         3,
 					RetryTimeOut:       3 * time.Second,
 					ProxyUrl:           proxyUrl,
