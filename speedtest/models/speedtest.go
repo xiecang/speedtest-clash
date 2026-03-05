@@ -7,6 +7,10 @@ import (
 	"github.com/metacubex/mihomo/constant"
 )
 
+// OnResultCallback 测速完成回调，每完成一个节点测速即调用一次。
+// ctx 为测速的上下文，可判断是否已取消。
+type OnResultCallback func(ctx context.Context, result *CProxyWithResult)
+
 type SortField string
 
 const (
@@ -50,6 +54,9 @@ type Options struct {
 	Cache                Cache            `json:"-"`                      // 缓存实现，不序列化
 	Proxies              []map[string]any `json:"-"`                      // 支持传入 proxy 配置来测速
 	Progress             ProgressConfig   `json:"progress"`               // 进度配置
+	ForceCertVerify      bool             `json:"force_cert_verify"`      // 若为 true，有 skip-cert-verify 字段的节点强制设置为 false（强制验证证书）
+	OnResult             OnResultCallback `json:"-"`                      // 单节点测速完成回调（实时），不序列化
+	OnResultTimeout      time.Duration    `json:"on_result_timeout"`      // 回调超时，0=默认10s，负数=不限超时（继承父ctx）
 }
 
 type CProxy struct {

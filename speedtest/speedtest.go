@@ -270,7 +270,6 @@ func (t *Test) loadProxiesFromOptions() {
 }
 
 func (t *Test) addProxyInternal(ctx context.Context, proxy models.CProxy) {
-	atomic.AddInt32(t.totalCount, 1) // 所有节点都计入总数
 	if !t.proxyShouldKeep(proxy) {
 		atomic.AddInt32(t.count, 1) // 即使不测速，也算作已处理
 		return
@@ -296,9 +295,16 @@ func (t *Test) addProxyConfig(ctx context.Context, config map[string]any) error 
 	if name, ok := config["name"].(string); ok && name != "" {
 		if (t.regexpNonContain != nil && t.regexpNonContain.MatchString(name)) ||
 			(t.regexpContain != nil && !t.regexpContain.MatchString(name)) {
-			// 如果被过滤了，依然需要增加总数和已处理计数
+			// 如果被过滤了，依然需要增加已处理计数
 			atomic.AddInt32(t.count, 1)
 			return nil
+		}
+	}
+
+	// 强制设置 skip-cert-verify
+	if t.options.ForceCertVerify {
+		if _, exists := config["skip-cert-verify"]; exists {
+			config["skip-cert-verify"] = false
 		}
 	}
 
@@ -313,12 +319,12 @@ func (t *Test) addProxyConfig(ctx context.Context, config map[string]any) error 
 	return nil
 }
 
-// AddProxyConfig 实时添加一个待测速节点配置
+// AddProxyConfig 实时添加一个待测速节点配置（外部单个调用时使用）
 func (t *Test) AddProxyConfig(ctx context.Context, config map[string]any) error {
 	if !t.testing.Load() {
 		return fmt.Errorf("测速未开始或已结束")
 	}
-	atomic.AddInt32(t.totalCount, 1)
+	atomic.AddInt32(t.totalCount, 1) // 单个入口，在此处计入总数
 	return t.addProxyConfig(ctx, config)
 }
 
@@ -492,6 +498,10 @@ func (t *Test) TestSpeedStream(ctx context.Context) (<-chan *models.CProxyWithRe
 							}
 						} else {
 							atomic.AddInt32(t.invalidCount, 1)
+						}
+						// 实时回调（无论成功还是失败，均触发）
+						if result != nil {
+							t.fireOnResult(ctx, result)
 						}
 					}(proxy)
 				}
@@ -793,4 +803,35 @@ func (t *Test) CloseProxies() {
 		close(t.proxiesCh)
 		close(t.errCh)
 	}
+}
+
+// fireOnResult 安全地调用用户设置的 OnResult 回调。
+// - 在独立 goroutine 中运行，避免阻塞工作线程
+// - 超时由 options.OnResultTimeout 控制：0=默认10s，负数=不加独立超时（继承父ctx）
+// - recover 防止回调内部 panic 崩溃整个工作线程
+func (t *Test) fireOnResult(ctx context.Context, result *models.CProxyWithResult) {
+	cb := t.options.OnResult
+	if cb == nil {
+		return
+	}
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Errorln("OnResult callback panic: %v", r)
+			}
+		}()
+
+		timeout := t.options.OnResultTimeout
+		if timeout < 0 {
+			// 不加独立超时，直接继承父 ctx
+			cb(ctx, result)
+			return
+		}
+		if timeout == 0 {
+			timeout = 10 * time.Second // 默认保底超时
+		}
+		cbCtx, cancel := context.WithTimeout(ctx, timeout)
+		defer cancel()
+		cb(cbCtx, result)
+	}()
 }

@@ -124,6 +124,12 @@ func request(ctx context.Context, option *RequestOption) (*XcResponse, error) {
 
 	var body []byte
 	body, err = io.ReadAll(resp.Body)
+	if err != nil {
+		if option.Verbose {
+			log.Errorln("io.ReadAll error: %v", err)
+		}
+		return nil, fmt.Errorf("io.ReadAll error: %w", err)
+	}
 	return &XcResponse{
 		Body:       body,
 		StatusCode: resp.StatusCode,
