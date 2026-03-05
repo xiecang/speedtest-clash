@@ -139,9 +139,10 @@ func TestTestSpeedWithFile(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 
 			opts := models.Options{
-				ConfigPath: tt.configPath,
-				Concurrent: 20,
-				Timeout:    30 * time.Second,
+				ConfigPath:      tt.configPath,
+				Concurrent:      20,
+				Timeout:         30 * time.Second,
+				ForceCertVerify: true,
 			}
 
 			tester, err := NewTest(opts)
