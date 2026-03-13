@@ -96,10 +96,9 @@ func (t *Test) startAutoProgress() {
 		interval = 3 * time.Second
 	}
 	t.logTicker = time.NewTicker(interval)
-	if t.stopChan == nil {
-		t.stopChan = make(chan struct{})
-	}
+	// We don't re-initialize stopChan if it's already there
 	go func() {
+		defer t.logTicker.Stop()
 		for {
 			select {
 			case <-t.logTicker.C:
@@ -415,14 +414,11 @@ func (t *Test) TestSpeedStream(ctx context.Context) (<-chan *models.CProxyWithRe
 		defer func() {
 			t.testing.Store(false)
 			close(resultsStream)
+			t.stopProgress()
 		}()
 
 		go func() {
 			wg.Wait()
-			// 如果是普通测试流，在这里关闭。
-			// 如果用户想要完全手动控制，可能需要一个标志位。
-			// 目前这里还是默认自动关闭 initial loading。
-			// 我们增加一个安全的 Close 方法。
 			t.CloseProxies()
 		}()
 
@@ -512,22 +508,94 @@ func (t *Test) LogNum() {
 	now := time.Now().Format("15:04:05")
 	total := atomic.LoadInt32(t.totalCount)
 	invalid := atomic.LoadInt32(t.invalidCount)
-	alive := len(t.aliveProxies)
+	alive := int32(len(t.aliveProxies))
 	processed := atomic.LoadInt32(t.count)
 
 	fmt.Printf("\n[%s] 🎯 测速完成！\n", now)
-	fmt.Printf("📊 统计信息:\n")
-	fmt.Printf("   • 总节点数: %d\n", total)
-	fmt.Printf("   • 已处理: %d\n", processed)
-	fmt.Printf("   • ✅ 有效节点: %d\n", alive)
-	fmt.Printf("   • ❌ 无效节点: %d\n", invalid)
+	fmt.Printf("📊 统计概览:\n")
+	fmt.Printf("   • 总节点: %d | 已处理: %d | ✅ 有效: %d | ❌ 无效: %d\n", total, processed, alive, invalid)
 
-	// 防止除零
-	var efficiency float64
-	if processed > 0 {
-		efficiency = float64(alive) / float64(processed) * 100
+	if alive > 0 {
+		t.LogSummary()
 	}
-	fmt.Printf("   • 📈 有效率: %.1f%%\n", efficiency)
+}
+
+func (t *Test) LogSummary() {
+	var (
+		minBW, maxBW, totalBW float64
+		minD, maxD, totalD    int64
+		count                 = int64(len(t.aliveProxies))
+	)
+
+	if count == 0 {
+		return
+	}
+
+	minBW = t.aliveProxies[0].Bandwidth
+	minD = int64(t.aliveProxies[0].Delay)
+
+	for _, p := range t.aliveProxies {
+		bw := p.Bandwidth
+		d := int64(p.Delay)
+
+		if bw < minBW {
+			minBW = bw
+		}
+		if bw > maxBW {
+			maxBW = bw
+		}
+		totalBW += bw
+
+		if d < minD {
+			minD = d
+		}
+		if d > maxD {
+			maxD = d
+		}
+		totalD += d
+	}
+
+	avgBW := totalBW / float64(count)
+	avgD := totalD / count
+
+	// 使用 tabwriter 格式化输出
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintf(w, "\n📈 性能详情:\t最小值\t最大值\t平均值\n")
+
+	// 临时构建 Result 结构以调用 Formatted 方法
+	minR := &models.Result{Bandwidth: minBW, TTFB: time.Duration(minD) * time.Millisecond}
+	maxR := &models.Result{Bandwidth: maxBW, TTFB: time.Duration(maxD) * time.Millisecond}
+	avgR := &models.Result{Bandwidth: avgBW, TTFB: time.Duration(avgD) * time.Millisecond}
+
+	fmt.Fprintf(w, "   • 带宽:\t%s\t%s\t%s\n",
+		minR.FormattedBandwidth(), maxR.FormattedBandwidth(), avgR.FormattedBandwidth())
+	fmt.Fprintf(w, "   • 延迟:\t%s\t%s\t%s\n",
+		minR.FormattedTTFB(), maxR.FormattedTTFB(), avgR.FormattedTTFB())
+	_ = w.Flush()
+
+	// 简单的按国家统计
+	countryStats := make(map[string]int)
+	for _, p := range t.aliveProxies {
+		c := p.Country
+		if c == "" {
+			c = "Unknown"
+		}
+		countryStats[c]++
+	}
+
+	if len(countryStats) > 0 {
+		fmt.Printf("\n🌍 地区分布:\n")
+		// 排序输出
+		var countries []string
+		for c := range countryStats {
+			countries = append(countries, c)
+		}
+		sort.Strings(countries)
+		for _, c := range countries {
+			fmt.Printf("   • %-10s: %d 个节点\n", c, countryStats[c])
+		}
+	}
+	fmt.Println()
 }
 
 func (t *Test) LogAlive() {
@@ -752,9 +820,8 @@ func NewTest(options models.Options) (*Test, error) {
 	}, nil
 }
 
-// Close 关闭测试实例，清理资源
-func (t *Test) Close() error {
-	// 停止自动进度输出
+// stopProgress 安全停止进度输出
+func (t *Test) stopProgress() {
 	if t.logTicker != nil {
 		t.logTicker.Stop()
 		t.logTicker = nil
@@ -766,8 +833,12 @@ func (t *Test) Close() error {
 		default:
 			close(t.stopChan)
 		}
-		t.stopChan = nil
 	}
+}
+
+// Close 关闭测试实例，清理资源
+func (t *Test) Close() error {
+	t.stopProgress()
 
 	if t.options.Cache != nil {
 		return t.options.Cache.Close()
