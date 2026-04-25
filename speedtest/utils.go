@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -101,6 +102,9 @@ func (s *proxyTest) testBandwidth(ctx context.Context) (time.Duration, float64, 
 
 	if downloadSize <= 0 {
 		downloadSize = 10 * 1024 * 1024 // 默认 10M
+	}
+	if strings.Contains(url, "%d") {
+		url = fmt.Sprintf(url, downloadSize)
 	}
 
 	// Now run multi-threaded download to measure bandwidth and sample TTFB
@@ -401,8 +405,14 @@ func (s *proxyTest) Test(ctx context.Context) *models.Result {
 		URLForTest = option.URLForTest
 	)
 
-	// 优先测试延迟和丢包率，实现快速失败
-	delay, jitter, lossRate := s.testDelay(ctx)
+	// 优先测试延迟和丢包率，实现快速失败，避免坏节点占满完整测速超时。
+	probeCtx := ctx
+	var cancel context.CancelFunc
+	if option.ProbeTimeout > 0 {
+		probeCtx, cancel = context.WithTimeout(ctx, option.ProbeTimeout)
+		defer cancel()
+	}
+	delay, jitter, lossRate := s.testDelay(probeCtx)
 	if delay == 0 || lossRate >= 1.0 {
 		log.Debugln("[%s] 节点不可用 (Delay: %v, Loss: %.2f), 跳过后续测试", name, delay, lossRate)
 		return &models.Result{

@@ -166,3 +166,39 @@ func TestTestSpeedWithFile(t *testing.T) {
 		})
 	}
 }
+
+func TestTestSpeedWithLargeInlineProxiesDoesNotBlock(t *testing.T) {
+	proxyCount := cpuCount*10 + 25
+	proxies := make([]map[string]any, 0, proxyCount)
+	mockResults := make(map[string]*models.CProxyWithResult, proxyCount)
+
+	for i := 0; i < proxyCount; i++ {
+		name := "proxy-large-" + time.Unix(0, int64(i)).Format("150405.000000000")
+		proxies = append(proxies, map[string]any{
+			"name":     name,
+			"type":     "ss",
+			"server":   "1.1.1.1",
+			"port":     8388,
+			"cipher":   "aes-128-gcm",
+			"password": "pass",
+		})
+		mockResults[name] = &models.CProxyWithResult{Result: models.Result{Name: name, Delay: 100}}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	tester, err := NewTest(models.Options{
+		Proxies:    proxies,
+		Concurrent: 4,
+		Timeout:    time.Second,
+		Cache:      &mockCache{results: mockResults},
+	})
+	assert.NoError(t, err)
+	defer tester.Close()
+
+	results, err := tester.TestSpeed(ctx)
+	assert.NoError(t, err)
+	assert.Len(t, results, proxyCount)
+	assert.Equal(t, int32(proxyCount), tester.ProcessCount())
+}

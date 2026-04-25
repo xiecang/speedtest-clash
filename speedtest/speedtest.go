@@ -260,12 +260,12 @@ func (t *Test) loadProxies(ctx context.Context, wg *sync.WaitGroup, buf []byte, 
 
 }
 
-func (t *Test) loadProxiesFromOptions() {
+func (t *Test) loadProxiesFromOptions(ctx context.Context) {
 	if len(t.options.Proxies) == 0 {
 		return
 	}
 
-	_ = t.AddProxies(context.Background(), t.options.Proxies)
+	_ = t.AddProxies(ctx, t.options.Proxies)
 }
 
 // processProxy 内部测速节点处理核心逻辑（计入已处理 count，但不计入总量 totalCount）
@@ -385,6 +385,7 @@ func (t *Test) TestSpeedStream(ctx context.Context) (<-chan *models.CProxyWithRe
 	// 重置/初始化状态
 	t.proxiesCh = make(chan models.CProxy, cpuCount*10)
 	t.errCh = make(chan error, cpuCount*10)
+	t.stopChan = make(chan struct{})
 	atomic.StoreInt32(t.count, 0)
 	atomic.StoreInt32(t.totalCount, 0)
 	atomic.StoreInt32(t.invalidCount, 0)
@@ -396,7 +397,11 @@ func (t *Test) TestSpeedStream(ctx context.Context) (<-chan *models.CProxyWithRe
 		t.ReadProxies(ctx, &wg, t.options.ConfigPath, t.proxyUrl)
 	}
 	if len(t.options.Proxies) > 0 {
-		t.loadProxiesFromOptions()
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			t.loadProxiesFromOptions(ctx)
+		}()
 	}
 
 	t.startAutoProgress()
@@ -755,6 +760,12 @@ func checkOptions(options *models.Options) (bool, string) {
 	}
 	if options.Timeout == 0 {
 		options.Timeout = 2 * time.Minute
+	}
+	if options.ProbeTimeout == 0 {
+		options.ProbeTimeout = 5 * time.Second
+		if options.Timeout > 0 && options.Timeout < options.ProbeTimeout {
+			options.ProbeTimeout = options.Timeout
+		}
 	}
 	if options.SortField == "" {
 		options.SortField = models.SortFieldBandwidth

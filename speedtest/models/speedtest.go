@@ -50,6 +50,7 @@ type Options struct {
 	Concurrent           int              `json:"concurrent"`             // 测速的并发数，默认 CPU 数量
 	BandwidthConcurrency int              `json:"bandwidth_concurrency"`  // 带宽测速并发数
 	LatencySamples       int              `json:"latency_samples"`        // 建立连接后的延迟测试次数
+	ProbeTimeout         time.Duration    `json:"probe_timeout"`          // 探活超时，用于快速淘汰失效节点
 	DelayTestUrl         string           `json:"delay_test_url"`         // 延迟测试 URL
 	Cache                Cache            `json:"-"`                      // 缓存实现，不序列化
 	Proxies              []map[string]any `json:"-"`                      // 支持传入 proxy 配置来测速
