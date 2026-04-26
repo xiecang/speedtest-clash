@@ -70,9 +70,10 @@ func testspeed(ctx context.Context, proxy models.CProxy, options *models.Options
 }
 
 type proxyTest struct {
-	name   string
-	option *models.Options
-	proxy  C.Proxy
+	name             string
+	option           *models.Options
+	proxy            C.Proxy
+	bandwidthLimiter *models.BandwidthLimiter
 	//
 	client *http.Client
 }
@@ -82,10 +83,11 @@ func newProxyTest(name string, proxy C.Proxy, option *models.Options) *proxyTest
 	// This is more flexible for bandwidth and latency testing.
 	client := requests.GetClient(proxy, 0)
 	return &proxyTest{
-		name:   name,
-		option: option,
-		proxy:  proxy,
-		client: client,
+		name:             name,
+		option:           option,
+		proxy:            proxy,
+		client:           client,
+		bandwidthLimiter: models.NewBandwidthLimiter(option.MaxBandwidthBytesPerSec),
 	}
 }
 
@@ -196,7 +198,7 @@ func (s *proxyTest) testBandwidth(ctx context.Context) (time.Duration, float64, 
 }
 
 func (s *proxyTest) copyLimited(ctx context.Context, dst io.Writer, src io.Reader) (int64, error) {
-	const bufSize = 32 * 1024 // must be ≤ models.Options burst (also 32*1024)
+	const bufSize = 32 * 1024 // must match models.bandwidthBurstBytes
 	buf := make([]byte, bufSize)
 	var written int64
 	for {
@@ -213,7 +215,7 @@ func (s *proxyTest) copyLimited(ctx context.Context, dst io.Writer, src io.Reade
 				return written, io.ErrShortWrite
 			}
 			// Throttle based on actual bytes read, not buffer capacity.
-			if err := s.option.WaitBandwidth(ctx, int64(nr)); err != nil {
+			if err := s.bandwidthLimiter.Wait(ctx, int64(nr)); err != nil {
 				return written, err
 			}
 		}

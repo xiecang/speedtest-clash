@@ -3,7 +3,6 @@ package models
 import (
 	"context"
 	"fmt"
-	"sync"
 	"time"
 
 	"github.com/metacubex/mihomo/constant"
@@ -64,36 +63,42 @@ type Options struct {
 	ForceCertVerify         bool             `json:"force_cert_verify"`           // 若为 true，有 skip-cert-verify 字段的节点强制设置为 false（强制验证证书）
 	OnResult                OnResultCallback `json:"-"`                           // 单节点测速完成回调（实时），不序列化
 	OnResultTimeout         time.Duration    `json:"on_result_timeout"`           // 回调超时，0=默认10s，负数=不限超时（继承父ctx）
-
-	bandwidthLimiterOnce sync.Once
-	bandwidthLimiter     *rate.Limiter
 }
 
-// copyLimitedBufSize is the read buffer size used by copyLimited.
-// The limiter burst must be at least this large.
-const copyLimitedBufSize = 32 * 1024
+// bandwidthBurstBytes is the token-bucket burst size for BandwidthLimiter.
+// It must be ≥ the read-buffer size used in copyLimited (32 KiB).
+const bandwidthBurstBytes = 32 * 1024
 
-// WaitBandwidth blocks until the rate limiter allows downloading bytes more bytes,
-// or until ctx is cancelled. Returns nil if no limit is configured.
-// Always returns ctx.Err() (e.g. context.DeadlineExceeded) on context cancellation.
-func (o *Options) WaitBandwidth(ctx context.Context, bytes int64) error {
-	if o == nil || o.MaxBandwidthBytesPerSec <= 0 || bytes <= 0 {
+// BandwidthLimiter is a token-bucket rate limiter scoped to a single proxy
+// speed-test run.  Create one via NewBandwidthLimiter; a nil value means
+// "no limit" and all Wait calls return immediately.
+type BandwidthLimiter struct {
+	lim *rate.Limiter
+}
+
+// NewBandwidthLimiter returns a BandwidthLimiter capped at maxBytesPerSec.
+// Returns nil (no-op) when maxBytesPerSec <= 0.
+func NewBandwidthLimiter(maxBytesPerSec int64) *BandwidthLimiter {
+	if maxBytesPerSec <= 0 {
 		return nil
 	}
-	o.bandwidthLimiterOnce.Do(func() {
-		// burst must be ≥ the largest n passed to WaitN (= copyLimitedBufSize).
-		const burst = copyLimitedBufSize
-		lim := rate.NewLimiter(rate.Limit(o.MaxBandwidthBytesPerSec), burst)
-		// Drain the initial token pool so the limiter behaves as a pure leaky bucket
-		// with no free initial burst — every byte costs from the first call.
-		lim.ReserveN(time.Now(), burst)
-		o.bandwidthLimiter = lim
-	})
+	lim := rate.NewLimiter(rate.Limit(maxBytesPerSec), bandwidthBurstBytes)
+	// Drain the initial burst so the limiter starts as a pure leaky bucket —
+	// no free credit on the first call.
+	lim.ReserveN(time.Now(), bandwidthBurstBytes)
+	return &BandwidthLimiter{lim: lim}
+}
 
-	r := o.bandwidthLimiter.ReserveN(time.Now(), int(bytes))
+// Wait blocks until the limiter allows bytes more bytes to be downloaded,
+// or until ctx is cancelled.  Always returns ctx.Err() on cancellation so
+// callers can use errors.Is(err, context.DeadlineExceeded) reliably.
+func (b *BandwidthLimiter) Wait(ctx context.Context, bytes int64) error {
+	if b == nil || bytes <= 0 {
+		return nil
+	}
+	r := b.lim.ReserveN(time.Now(), int(bytes))
 	if !r.OK() {
-		// n exceeds burst; shouldn't happen if callers honour copyLimitedBufSize.
-		return fmt.Errorf("rate: requested %d bytes exceeds limiter burst", bytes)
+		return fmt.Errorf("rate: requested %d bytes exceeds limiter burst (%d)", bytes, bandwidthBurstBytes)
 	}
 	delay := r.Delay()
 	if delay <= 0 {
@@ -103,7 +108,7 @@ func (o *Options) WaitBandwidth(ctx context.Context, bytes int64) error {
 	defer t.Stop()
 	select {
 	case <-ctx.Done():
-		r.Cancel() // return the reserved tokens to the pool
+		r.Cancel()
 		return ctx.Err()
 	case <-t.C:
 		return nil
