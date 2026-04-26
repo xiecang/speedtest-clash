@@ -762,7 +762,7 @@ func (t *Test) Proxies() ([]map[string]interface{}, error) {
 }
 
 func checkOptions(options *models.Options) (bool, string) {
-	if options.ConfigPath == "" && len(options.Proxies) == 0 {
+	if options.ConfigPath == "" && len(options.Proxies) == 0 && !options.KeepOpen {
 		return false, "配置不能为空，请至少提供 ConfigPath 或 Proxies"
 	}
 	if options.DownloadSize == 0 {
