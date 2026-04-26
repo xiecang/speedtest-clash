@@ -152,14 +152,17 @@ func (s *proxyTest) testBandwidth(ctx context.Context) (time.Duration, float64, 
 			}
 
 			n, err := s.copyLimited(ctx, io.Discard, io.LimitReader(resp.Body, chunkSize))
-			if err != nil {
-				mu.Lock()
-				downloadErr = err
-				mu.Unlock()
-				return
-			}
 			mu.Lock()
-			totalBytes += n
+			// Always tally downloaded bytes, even on a partial read that ended with
+			// an error (e.g. context deadline mid-download).  This matches the old
+			// io.Copy behaviour and ensures slow proxies produce a bandwidth reading
+			// instead of zero.
+			if n > 0 {
+				totalBytes += n
+			}
+			if err != nil {
+				downloadErr = err
+			}
 			mu.Unlock()
 		}()
 	}
