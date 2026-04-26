@@ -185,6 +185,13 @@ func (s *proxyTest) testBandwidth(ctx context.Context) (time.Duration, float64, 
 	return avgTTFB, bandwidth, nil
 }
 
+func (s *proxyTest) testBandwidthIfEnabled(ctx context.Context) (time.Duration, float64, error) {
+	if s.option.DisableBandwidthTest {
+		return 0, 0, nil
+	}
+	return s.testBandwidth(ctx)
+}
+
 type urlResult struct {
 	url      string
 	delay    uint16
@@ -438,7 +445,7 @@ func (s *proxyTest) Test(ctx context.Context) *models.Result {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		t, b, err := s.testBandwidth(ctx)
+		t, b, err := s.testBandwidthIfEnabled(ctx)
 		mu.Lock()
 		ttfb, bandwidth, bandwidthErr = t, b, err
 		mu.Unlock()

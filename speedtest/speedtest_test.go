@@ -5,7 +5,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/metacubex/mihomo/log"
 	"github.com/stretchr/testify/assert"
 	"github.com/xiecang/speedtest-clash/speedtest/models"
 )
@@ -29,6 +28,18 @@ func (m *mockCache) GenerateKey(proxy *models.CProxy) string {
 }
 
 func (m *mockCache) Close() error { return nil }
+
+func TestProxyDisableBandwidthTestSkipsDownload(t *testing.T) {
+	p := &proxyTest{
+		option: &models.Options{DisableBandwidthTest: true},
+	}
+
+	ttfb, bandwidth, err := p.testBandwidthIfEnabled(context.Background())
+
+	assert.NoError(t, err)
+	assert.Equal(t, time.Duration(0), ttfb)
+	assert.Equal(t, float64(0), bandwidth)
+}
 
 func TestTestSpeedTableDriven(t *testing.T) {
 	tests := []struct {
@@ -131,7 +142,7 @@ func TestTestSpeedTableDriven(t *testing.T) {
 }
 
 func TestTestSpeedWithFile(t *testing.T) {
-	log.SetLevel(log.DEBUG)
+	//log.SetLevel(log.DEBUG)
 	tests := []struct {
 		name       string
 		configPath string

@@ -49,6 +49,7 @@ type Options struct {
 	CheckTypes           []CheckType      `json:"check_types"`            // 检查节点可解锁的类型, 可用值请参考 CheckType
 	Concurrent           int              `json:"concurrent"`             // 测速的并发数，默认 CPU 数量
 	BandwidthConcurrency int              `json:"bandwidth_concurrency"`  // 带宽测速并发数
+	DisableBandwidthTest bool             `json:"disable_bandwidth_test"` // 禁用带宽下载测速，仅保留探活/延迟/URL/解锁检查
 	LatencySamples       int              `json:"latency_samples"`        // 建立连接后的延迟测试次数
 	ProbeTimeout         time.Duration    `json:"probe_timeout"`          // 探活超时，用于快速淘汰失效节点
 	DelayTestUrl         string           `json:"delay_test_url"`         // 延迟测试 URL
