@@ -12,15 +12,20 @@ type CProxyWithResult struct {
 }
 
 type Result struct {
-	Name         string          `json:"name"`
-	Bandwidth    float64         `json:"bandwidth"` // 带宽，单位为 B/s
-	TTFB         time.Duration   `json:"TTFB"`
-	Delay        uint16          `json:"delay"`
-	Jitter       uint16          `json:"jitter"`    // 抖动 (ms)
-	LossRate     float64         `json:"loss_rate"` // 丢包率 (0.0-1.0)
-	Country      string          `json:"country"`
-	CheckResults []CheckResult   `json:"check_results"`
-	URLForTest   map[string]bool `json:"url_for_test"`
+	Name          string          `json:"name"`
+	Bandwidth     float64         `json:"bandwidth"` // 带宽，单位为 B/s
+	TTFB          time.Duration   `json:"TTFB"`
+	Delay         uint16          `json:"delay"`
+	DelayP50      uint16          `json:"delay_p50"`
+	DelayP90      uint16          `json:"delay_p90"`
+	DelayP95      uint16          `json:"delay_p95"`
+	Jitter        uint16          `json:"jitter"`    // 抖动 (ms)
+	LossRate      float64         `json:"loss_rate"` // 丢包率 (0.0-1.0)
+	Country       string          `json:"country"`
+	CheckResults  []CheckResult   `json:"check_results"`
+	URLForTest    map[string]bool `json:"url_for_test"`
+	TestDuration  time.Duration   `json:"test_duration"`
+	DownloadBytes int64           `json:"download_bytes"`
 }
 
 func (r *Result) Alive() bool {

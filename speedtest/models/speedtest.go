@@ -50,7 +50,6 @@ type Options struct {
 	ProxyUrl                string           `json:"proxy_url"`                   // ConfigPath 为网络链接时可使用指定代理下载
 	CheckTypes              []CheckType      `json:"check_types"`                 // 检查节点可解锁的类型, 可用值请参考 CheckType
 	Concurrent              int              `json:"concurrent"`                  // 测速的并发数，默认 CPU 数量
-	CandidateLimit          int              `json:"candidate_limit"`             // 测速前候选节点数量上限，<=0 表示不限制
 	BandwidthConcurrency    int              `json:"bandwidth_concurrency"`       // 带宽测速并发数
 	DisableBandwidthTest    bool             `json:"disable_bandwidth_test"`      // 禁用带宽下载测速，仅保留探活/延迟/URL/解锁检查
 	MaxBandwidthBytesPerSec int64            `json:"max_bandwidth_bytes_per_sec"` // Test 级下载速率上限，<=0 表示不限制
@@ -63,6 +62,10 @@ type Options struct {
 	ForceCertVerify         bool             `json:"force_cert_verify"`           // 若为 true，有 skip-cert-verify 字段的节点强制设置为 false（强制验证证书）
 	OnResult                OnResultCallback `json:"-"`                           // 单节点测速完成回调（实时），不序列化
 	OnResultTimeout         time.Duration    `json:"on_result_timeout"`           // 回调超时，0=默认10s，负数=不限超时（继承父ctx）
+	// KeepOpen prevents TestSpeedStream from closing the proxy channel after
+	// the initial config/proxies are loaded.  When true the caller is
+	// responsible for calling CloseProxies() when it is done feeding nodes.
+	KeepOpen bool `json:"keep_open"`
 }
 
 // bandwidthBurstBytes is the token-bucket burst size for BandwidthLimiter.

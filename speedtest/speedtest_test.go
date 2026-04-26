@@ -34,11 +34,46 @@ func TestProxyDisableBandwidthTestSkipsDownload(t *testing.T) {
 		option: &models.Options{DisableBandwidthTest: true},
 	}
 
-	ttfb, bandwidth, err := p.testBandwidthIfEnabled(context.Background())
+	ttfb, bandwidth, downloadBytes, err := p.testBandwidthIfEnabled(context.Background())
 
 	assert.NoError(t, err)
 	assert.Equal(t, time.Duration(0), ttfb)
 	assert.Equal(t, float64(0), bandwidth)
+	assert.Equal(t, int64(0), downloadBytes)
+}
+
+func TestPercentileDelay(t *testing.T) {
+	delays := []uint16{10, 20, 30, 40, 50}
+
+	assert.Equal(t, uint16(30), percentileDelay(delays, 0.50))
+	assert.Equal(t, uint16(50), percentileDelay(delays, 0.90))
+	assert.Equal(t, uint16(50), percentileDelay(delays, 0.95))
+}
+
+func TestCandidateLimit(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	cache := &mockCache{results: map[string]*models.CProxyWithResult{
+		"proxy1": {Result: models.Result{Name: "proxy1", Delay: 100}},
+		"proxy2": {Result: models.Result{Name: "proxy2", Delay: 200}},
+	}}
+	tester, err := NewTest(models.Options{
+		Proxies: []map[string]any{
+			{"name": "proxy1", "type": "ss", "server": "1.1.1.1", "port": 8388, "cipher": "aes-128-gcm", "password": "pass"},
+			{"name": "proxy2", "type": "ss", "server": "1.1.1.2", "port": 8388, "cipher": "aes-128-gcm", "password": "pass"},
+		},
+		Concurrent:   2,
+		Cache:        cache,
+		Timeout:      time.Second,
+		ProbeTimeout: time.Second,
+	})
+	assert.NoError(t, err)
+	defer tester.Close()
+
+	results, err := tester.TestSpeed(ctx)
+	assert.NoError(t, err)
+	assert.Len(t, results, 2)
 }
 
 func TestTestSpeedTableDriven(t *testing.T) {

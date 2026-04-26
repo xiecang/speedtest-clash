@@ -274,9 +274,17 @@ func (t *Test) processProxy(ctx context.Context, proxy models.CProxy) {
 		atomic.AddInt32(t.count, 1) // 跳过的节点也算作已处理
 		return
 	}
+	// 优先非阻塞入队，避免 ctx.Done() 与 channel send 同时就绪时的随机丢弃问题。
 	select {
-	case <-ctx.Done():
 	case t.proxiesCh <- proxy:
+		return
+	default:
+	}
+	// 缓冲区已满时阻塞等待，同时监听 ctx 取消。
+	select {
+	case t.proxiesCh <- proxy:
+	case <-ctx.Done():
+		atomic.AddInt32(t.count, 1)
 	}
 }
 
@@ -424,7 +432,9 @@ func (t *Test) TestSpeedStream(ctx context.Context) (<-chan *models.CProxyWithRe
 
 		go func() {
 			wg.Wait()
-			t.CloseProxies()
+			if !t.options.KeepOpen {
+				t.CloseProxies()
+			}
 		}()
 
 		for {
