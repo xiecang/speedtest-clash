@@ -45,7 +45,6 @@ type Test struct {
 	regexpNonContain *regexp.Regexp
 
 	proxiesCh chan models.CProxy
-	errCh     chan error
 	//
 	totalCount   *int32 // 计数器，记录总节点数量
 	count        *int32 // 计数器，记录已测速的节点数量
@@ -180,18 +179,10 @@ func (t *Test) ReadProxies(ctx context.Context, wg *sync.WaitGroup, configPathCo
 				})
 				if err != nil {
 					log.Warnln("failed to fetch config: %s, err: %s", configPath, err)
-					select {
-					case <-ctx.Done():
-					case t.errCh <- err:
-					}
 					return
 				}
 				if resp.StatusCode != http.StatusOK {
 					log.Warnln("failed to fetch config: %s, status code: %d", configPath, resp.StatusCode)
-					select {
-					case <-ctx.Done():
-					case t.errCh <- fmt.Errorf("status code: %d", resp.StatusCode):
-					}
 					return
 				}
 				body = resp.Body
@@ -199,10 +190,6 @@ func (t *Test) ReadProxies(ctx context.Context, wg *sync.WaitGroup, configPathCo
 				body, err = os.ReadFile(configPath)
 				if err != nil {
 					log.Warnln("failed to read local file: %s, err: %s", configPath, err)
-					select {
-					case <-ctx.Done():
-					case t.errCh <- err:
-					}
 					return
 				}
 			}
@@ -225,20 +212,14 @@ func (t *Test) loadProxies(ctx context.Context, wg *sync.WaitGroup, buf []byte, 
 		}
 		proxyList, err := convert.ConvertsV2Ray(buf)
 		if err != nil {
-			select {
-			case <-ctx.Done():
-			case t.errCh <- err:
-			}
+			log.Warnln("failed to convert proxies: %s", err)
 			return
 		}
 		_ = t.AddProxies(ctx, proxyList)
 		return
 	}
 	if err := yaml.Unmarshal(buf, rawCfg); err != nil {
-		select {
-		case <-ctx.Done():
-		case t.errCh <- err:
-		}
+		log.Warnln("failed to parse config: %s", err)
 		return
 	}
 	proxiesConfig := rawCfg.Proxies
@@ -344,10 +325,12 @@ func (t *Test) AddProxies(ctx context.Context, configs []map[string]any) error {
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, concurrency)
 
+	var ctxErr error
 	for _, config := range configs {
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			ctxErr = ctx.Err()
+			goto waitAndReturn
 		case sem <- struct{}{}:
 			wg.Add(1)
 			go func(c map[string]any) {
@@ -357,8 +340,10 @@ func (t *Test) AddProxies(ctx context.Context, configs []map[string]any) error {
 			}(config)
 		}
 	}
+waitAndReturn:
+	// 必须等待所有已启动的 goroutine 完成，防止它们在 proxiesCh 关闭后继续发送导致 panic。
 	wg.Wait()
-	return nil
+	return ctxErr
 }
 
 func (t *Test) TestSpeed(ctx context.Context) ([]models.CProxyWithResult, error) {
@@ -392,7 +377,6 @@ func (t *Test) TestSpeedStream(ctx context.Context) (<-chan *models.CProxyWithRe
 
 	// 重置/初始化状态
 	t.proxiesCh = make(chan models.CProxy, cpuCount*10)
-	t.errCh = make(chan error, cpuCount*10)
 	t.stopChan = make(chan struct{})
 	atomic.StoreInt32(t.count, 0)
 	atomic.StoreInt32(t.totalCount, 0)
@@ -832,7 +816,6 @@ func NewTest(options models.Options) (*Test, error) {
 		regexpContain:    regexpContain,
 		regexpNonContain: regexpNonContain,
 		proxiesCh:        make(chan models.CProxy, cpuCount*10),
-		errCh:            make(chan error, cpuCount*10), // 增加错误 channel 缓冲区
 		totalCount:       new(int32),
 		count:            new(int32),
 		invalidCount:     new(int32),
@@ -870,13 +853,10 @@ func (t *Test) Close() error {
 
 func (t *Test) CloseProxies() {
 	if t.testing.Load() {
-		// 使用 once 确保只关闭一次，或者检查 channel 状态
-		// 这里简单处理，因为通常由 wg.Wait() 控制
 		defer func() {
 			recover() // 防止重复关闭 panic
 		}()
 		close(t.proxiesCh)
-		close(t.errCh)
 	}
 }
 

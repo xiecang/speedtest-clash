@@ -2,6 +2,7 @@ package speedtest
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -247,4 +248,102 @@ func TestTestSpeedWithLargeInlineProxiesDoesNotBlock(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Len(t, results, proxyCount)
 	assert.Equal(t, int32(proxyCount), tester.ProcessCount())
+}
+
+// TestNoHangWithManyConfigErrors verifies that loading goroutines always call
+// wg.Done() even when errors occur, preventing a hang in the dispatch loop.
+// Previously, errCh sends could block indefinitely when the buffer was full,
+// preventing wg.Wait() → CloseProxies() → close(proxiesCh) from completing.
+func TestNoHangWithManyConfigErrors(t *testing.T) {
+	proxyCount := cpuCount*10 + 25
+	proxies := make([]map[string]any, 0, proxyCount)
+	mockResults := make(map[string]*models.CProxyWithResult, proxyCount)
+
+	for i := 0; i < proxyCount; i++ {
+		name := "proxy-errch-" + time.Unix(0, int64(i)).Format("150405.000000000")
+		proxies = append(proxies, map[string]any{
+			"name":     name,
+			"type":     "ss",
+			"server":   "1.1.1.1",
+			"port":     8388,
+			"cipher":   "aes-128-gcm",
+			"password": "pass",
+		})
+		mockResults[name] = &models.CProxyWithResult{Result: models.Result{Name: name, Delay: 100}}
+	}
+
+	// Include a config path that will fail to load instantly (triggering error paths).
+	// The test uses context.Background() so any goroutine blocked on errCh (before fix)
+	// would hang forever; now errors are just logged and wg.Done() is called immediately.
+	tester, err := NewTest(models.Options{
+		Proxies:    proxies,
+		ConfigPath: "/nonexistent/path/config1.yaml|/nonexistent/path/config2.yaml",
+		Concurrent: 4,
+		Timeout:    time.Second,
+		Cache:      &mockCache{results: mockResults},
+	})
+	assert.NoError(t, err)
+	defer tester.Close()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		tester.TestSpeed(context.Background()) //nolint:errcheck
+	}()
+
+	select {
+	case <-done:
+		// success: completed without hanging
+	case <-time.After(10 * time.Second):
+		t.Fatal("TestSpeed hung — loading goroutines likely blocked on errCh send")
+	}
+}
+
+// TestNoPanicOnCtxCancelDuringAddProxies ensures that cancelling the context while
+// AddProxies is dispatching goroutines does not cause a "send on closed channel" panic.
+// Previously, AddProxies returned early on ctx.Done() without waiting for already-launched
+// goroutines, which could race with CloseProxies() closing proxiesCh.
+func TestNoPanicOnCtxCancelDuringAddProxies(t *testing.T) {
+	proxyCount := 200
+	proxies := make([]map[string]any, 0, proxyCount)
+	mockResults := make(map[string]*models.CProxyWithResult, proxyCount)
+
+	for i := 0; i < proxyCount; i++ {
+		name := fmt.Sprintf("proxy-cancel-%d", i)
+		proxies = append(proxies, map[string]any{
+			"name":     name,
+			"type":     "ss",
+			"server":   "1.1.1.1",
+			"port":     8388,
+			"cipher":   "aes-128-gcm",
+			"password": "pass",
+		})
+		mockResults[name] = &models.CProxyWithResult{Result: models.Result{Name: name, Delay: 100}}
+	}
+
+	// Cancel the context almost immediately to trigger early-return path in AddProxies.
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Millisecond)
+	defer cancel()
+
+	tester, err := NewTest(models.Options{
+		Proxies:    proxies,
+		Concurrent: 2,
+		Timeout:    time.Second,
+		Cache:      &mockCache{results: mockResults},
+	})
+	assert.NoError(t, err)
+	defer tester.Close()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		tester.TestSpeed(ctx) //nolint:errcheck
+	}()
+
+	select {
+	case <-done:
+		// success: no panic, no hang
+	case <-time.After(5 * time.Second):
+		t.Fatal("TestSpeed hung after ctx cancellation")
+	}
 }
