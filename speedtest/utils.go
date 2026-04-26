@@ -8,6 +8,7 @@ import (
 	"math/rand"
 	"net/http"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -88,7 +89,7 @@ func newProxyTest(name string, proxy C.Proxy, option *models.Options) *proxyTest
 	}
 }
 
-func (s *proxyTest) testBandwidth(ctx context.Context) (time.Duration, float64, error) {
+func (s *proxyTest) testBandwidth(ctx context.Context) (time.Duration, float64, int64, error) {
 	var (
 		client       = s.client
 		url          = s.option.LivenessAddr
@@ -150,7 +151,13 @@ func (s *proxyTest) testBandwidth(ctx context.Context) (time.Duration, float64, 
 				return
 			}
 
-			n, _ := io.Copy(io.Discard, io.LimitReader(resp.Body, chunkSize))
+			n, err := s.copyLimited(ctx, io.Discard, io.LimitReader(resp.Body, chunkSize))
+			if err != nil {
+				mu.Lock()
+				downloadErr = err
+				mu.Unlock()
+				return
+			}
 			mu.Lock()
 			totalBytes += n
 			mu.Unlock()
@@ -170,24 +177,55 @@ func (s *proxyTest) testBandwidth(ctx context.Context) (time.Duration, float64, 
 	}
 
 	if downloadErr != nil && totalBytes == 0 {
-		return avgTTFB, 0, fmt.Errorf("download failed: %v", downloadErr)
+		return avgTTFB, 0, totalBytes, fmt.Errorf("download failed: %v", downloadErr)
 	}
 
 	if totalBytes == 0 {
 		if downloadErr != nil {
-			return avgTTFB, 0, fmt.Errorf("no data downloaded: %v", downloadErr)
+			return avgTTFB, 0, totalBytes, fmt.Errorf("no data downloaded: %v", downloadErr)
 		}
-		return avgTTFB, 0, fmt.Errorf("no data downloaded")
+		return avgTTFB, 0, totalBytes, fmt.Errorf("no data downloaded")
 	}
 
 	bandwidth := float64(totalBytes) / downloadTime.Seconds() // B/s
 
-	return avgTTFB, bandwidth, nil
+	return avgTTFB, bandwidth, totalBytes, nil
 }
 
-func (s *proxyTest) testBandwidthIfEnabled(ctx context.Context) (time.Duration, float64, error) {
+func (s *proxyTest) copyLimited(ctx context.Context, dst io.Writer, src io.Reader) (int64, error) {
+	const bufSize = 32 * 1024 // must be ≤ models.Options burst (also 32*1024)
+	buf := make([]byte, bufSize)
+	var written int64
+	for {
+		nr, er := src.Read(buf)
+		if nr > 0 {
+			nw, ew := dst.Write(buf[:nr])
+			if nw > 0 {
+				written += int64(nw)
+			}
+			if ew != nil {
+				return written, ew
+			}
+			if nr != nw {
+				return written, io.ErrShortWrite
+			}
+			// Throttle based on actual bytes read, not buffer capacity.
+			if err := s.option.WaitBandwidth(ctx, int64(nr)); err != nil {
+				return written, err
+			}
+		}
+		if er != nil {
+			if er == io.EOF {
+				return written, nil
+			}
+			return written, er
+		}
+	}
+}
+
+func (s *proxyTest) testBandwidthIfEnabled(ctx context.Context) (time.Duration, float64, int64, error) {
 	if s.option.DisableBandwidthTest {
-		return 0, 0, nil
+		return 0, 0, 0, nil
 	}
 	return s.testBandwidth(ctx)
 }
@@ -200,7 +238,16 @@ type urlResult struct {
 	ok       bool
 }
 
-func (s *proxyTest) testURL(ctx context.Context, url string, tryCount int) (uint16, uint16, float64, error) {
+type latencyStats struct {
+	min      uint16
+	p50      uint16
+	p90      uint16
+	p95      uint16
+	jitter   uint16
+	lossRate float64
+}
+
+func (s *proxyTest) testURL(ctx context.Context, url string, tryCount int) (latencyStats, error) {
 	results := make(chan urlResult, tryCount)
 	var wg sync.WaitGroup
 
@@ -336,14 +383,22 @@ loop:
 			if expectedStatus.Check(uint16(resp.StatusCode)) {
 				delay := uint16(time.Since(start).Milliseconds())
 				log.Debugln("[%s] 补偿探测成功: %dms", s.name, delay)
-				return delay, 0, 0.0, nil
+				return latencyStats{
+					min:      delay,
+					p50:      delay,
+					p90:      delay,
+					p95:      delay,
+					lossRate: 0.0,
+				}, nil
 			}
 			log.Debugln("[%s] 补偿探测状态码错误: %d", s.name, resp.StatusCode)
 		} else {
 			log.Debugln("[%s] 补偿探测失败: %v", s.name, err)
 		}
-		return 0, 0, 1.0, lastErr
+		return latencyStats{lossRate: 1.0}, lastErr
 	}
+
+	sort.Slice(delays, func(i, j int) bool { return delays[i] < delays[j] })
 
 	// Calculate Jitter (Average deviation from mean)
 	var sumDelay uint32
@@ -365,12 +420,38 @@ loop:
 
 	log.Debugln("[%s] 探测结果汇总: Delay=%d, Jitter=%d, LossRate=%.2f", s.name, minDelay, jitter, lossRate)
 
-	return minDelay, jitter, lossRate, nil
+	return latencyStats{
+		min:      minDelay,
+		p50:      percentileDelay(delays, 0.50),
+		p90:      percentileDelay(delays, 0.90),
+		p95:      percentileDelay(delays, 0.95),
+		jitter:   jitter,
+		lossRate: lossRate,
+	}, nil
 }
 
-func (s *proxyTest) testDelay(ctx context.Context) (uint16, uint16, float64) {
-	d, jitter, loss, _ := s.testURL(ctx, s.option.DelayTestUrl, 3)
-	return d, jitter, loss
+func percentileDelay(sorted []uint16, percentile float64) uint16 {
+	if len(sorted) == 0 {
+		return 0
+	}
+	if percentile <= 0 {
+		return sorted[0]
+	}
+	if percentile >= 1 {
+		return sorted[len(sorted)-1]
+	}
+	idx := int(percentile*float64(len(sorted)-1) + 0.5)
+	if idx < 0 {
+		idx = 0
+	} else if idx >= len(sorted) {
+		idx = len(sorted) - 1
+	}
+	return sorted[idx]
+}
+
+func (s *proxyTest) testDelay(ctx context.Context) latencyStats {
+	stats, _ := s.testURL(ctx, s.option.DelayTestUrl, 3)
+	return stats
 }
 
 func (s *proxyTest) testURLAvailable(ctx context.Context, urls []string) map[string]bool {
@@ -384,11 +465,11 @@ func (s *proxyTest) testURLAvailable(ctx context.Context, urls []string) map[str
 	for _, url := range urls {
 		go func(url string) {
 			defer wg.Done()
-			d, _, _, okErr := s.testURL(ctx, url, 3)
+			stats, okErr := s.testURL(ctx, url, 3)
 			results <- &urlResult{
 				url:   url,
-				delay: d,
-				ok:    okErr == nil && d > 0,
+				delay: stats.min,
+				ok:    okErr == nil && stats.min > 0,
 			}
 		}(url)
 	}
@@ -404,6 +485,7 @@ func (s *proxyTest) testURLAvailable(ctx context.Context, urls []string) map[str
 }
 
 func (s *proxyTest) Test(ctx context.Context) *models.Result {
+	testStart := time.Now()
 	var (
 		name       = s.name
 		option     = s.option
@@ -419,35 +501,40 @@ func (s *proxyTest) Test(ctx context.Context) *models.Result {
 		probeCtx, cancel = context.WithTimeout(ctx, option.ProbeTimeout)
 		defer cancel()
 	}
-	delay, jitter, lossRate := s.testDelay(probeCtx)
-	if delay == 0 || lossRate >= 1.0 {
-		log.Debugln("[%s] 节点不可用 (Delay: %v, Loss: %.2f), 跳过后续测试", name, delay, lossRate)
+	delayStats := s.testDelay(probeCtx)
+	if delayStats.min == 0 || delayStats.lossRate >= 1.0 {
+		log.Debugln("[%s] 节点不可用 (Delay: %v, Loss: %.2f), 跳过后续测试", name, delayStats.min, delayStats.lossRate)
 		return &models.Result{
-			Name:     name,
-			Delay:    delay,
-			Jitter:   jitter,
-			LossRate: lossRate,
+			Name:         name,
+			Delay:        delayStats.min,
+			DelayP50:     delayStats.p50,
+			DelayP90:     delayStats.p90,
+			DelayP95:     delayStats.p95,
+			Jitter:       delayStats.jitter,
+			LossRate:     delayStats.lossRate,
+			TestDuration: time.Since(testStart),
 		}
 	}
 
 	var (
-		country      string
-		checkResults []models.CheckResult
-		urlResults   map[string]bool
-		ttfb         time.Duration
-		bandwidth    float64
-		bandwidthErr error
-		mu           sync.Mutex
-		wg           sync.WaitGroup
+		country       string
+		checkResults  []models.CheckResult
+		urlResults    map[string]bool
+		ttfb          time.Duration
+		bandwidth     float64
+		downloadBytes int64
+		bandwidthErr  error
+		mu            sync.Mutex
+		wg            sync.WaitGroup
 	)
 
 	// 1. 带宽测试
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		t, b, err := s.testBandwidthIfEnabled(ctx)
+		t, b, bytes, err := s.testBandwidthIfEnabled(ctx)
 		mu.Lock()
-		ttfb, bandwidth, bandwidthErr = t, b, err
+		ttfb, bandwidth, downloadBytes, bandwidthErr = t, b, bytes, err
 		mu.Unlock()
 	}()
 
@@ -515,15 +602,20 @@ func (s *proxyTest) Test(ctx context.Context) *models.Result {
 	}
 
 	return &models.Result{
-		Name:         name,
-		Bandwidth:    bandwidth,
-		TTFB:         ttfb,
-		Delay:        delay,
-		Jitter:       jitter,
-		LossRate:     lossRate,
-		Country:      country,
-		CheckResults: checkResults,
-		URLForTest:   urlResults,
+		Name:          name,
+		Bandwidth:     bandwidth,
+		TTFB:          ttfb,
+		Delay:         delayStats.min,
+		DelayP50:      delayStats.p50,
+		DelayP90:      delayStats.p90,
+		DelayP95:      delayStats.p95,
+		Jitter:        delayStats.jitter,
+		LossRate:      delayStats.lossRate,
+		Country:       country,
+		CheckResults:  checkResults,
+		URLForTest:    urlResults,
+		TestDuration:  time.Since(testStart),
+		DownloadBytes: downloadBytes,
 	}
 }
 
