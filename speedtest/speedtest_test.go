@@ -3,6 +3,7 @@ package speedtest
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"testing"
 	"time"
 
@@ -49,6 +50,39 @@ func TestPercentileDelay(t *testing.T) {
 	assert.Equal(t, uint16(30), percentileDelay(delays, 0.50))
 	assert.Equal(t, uint16(50), percentileDelay(delays, 0.90))
 	assert.Equal(t, uint16(50), percentileDelay(delays, 0.95))
+}
+
+func TestNewTestDefaultsLoggerAndExposesAliveCount(t *testing.T) {
+	tester, err := NewTest(models.Options{
+		KeepOpen: true,
+	})
+	if err != nil {
+		t.Fatalf("NewTest returned error: %v", err)
+	}
+	defer tester.Close()
+
+	field := reflect.ValueOf(tester.options).Elem().FieldByName("Logger")
+	if !field.IsValid() {
+		t.Fatal("Options.Logger field is missing")
+	}
+	if field.IsNil() {
+		t.Fatal("Options.Logger should default to a non-nil logger")
+	}
+	if got := tester.options.Progress.ProgressInterval; got != 3*time.Second {
+		t.Fatalf("ProgressInterval = %s, want %s", got, 3*time.Second)
+	}
+
+	method, ok := reflect.TypeOf(tester).MethodByName("AliveCount")
+	if !ok {
+		t.Fatal("AliveCount method is missing")
+	}
+	values := method.Func.Call([]reflect.Value{reflect.ValueOf(tester)})
+	if len(values) != 1 {
+		t.Fatalf("AliveCount returned %d values, want 1", len(values))
+	}
+	if got := values[0].Interface().(int32); got != 0 {
+		t.Fatalf("AliveCount() = %d, want 0", got)
+	}
 }
 
 func TestCandidateLimit(t *testing.T) {
@@ -178,7 +212,6 @@ func TestTestSpeedTableDriven(t *testing.T) {
 }
 
 func TestTestSpeedWithFile(t *testing.T) {
-	//log.SetLevel(log.DEBUG)
 	tests := []struct {
 		name       string
 		configPath string

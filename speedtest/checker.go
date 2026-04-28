@@ -2,11 +2,12 @@ package speedtest
 
 import (
 	"context"
+	"log/slog"
+	"sync"
+
 	C "github.com/metacubex/mihomo/constant"
-	"github.com/metacubex/mihomo/log"
 	"github.com/xiecang/speedtest-clash/speedtest/check"
 	"github.com/xiecang/speedtest-clash/speedtest/models"
-	"sync"
 )
 
 var (
@@ -21,12 +22,13 @@ var (
 	}
 )
 
-func checkProxy(ctx context.Context, proxy C.Proxy, types []models.CheckType) []models.CheckResult {
+func checkProxy(ctx context.Context, proxy C.Proxy, types []models.CheckType, logger *slog.Logger) []models.CheckResult {
 	var (
 		res []models.CheckResult
 		ch  = make(chan models.CheckResult, len(types))
 		wg  sync.WaitGroup
 	)
+	logger = resolveLogger(logger)
 	for _, checkType := range types {
 		if f, exist := mp[checkType]; exist {
 			wg.Add(1)
@@ -34,12 +36,17 @@ func checkProxy(ctx context.Context, proxy C.Proxy, types []models.CheckType) []
 				defer wg.Done()
 				r, err := f.Check(ctx, proxy)
 				if err != nil {
-					log.Infoln("[%s](%s) check %s failed, err: %s", proxy.Name(), proxy.Addr(), checkType, err)
+					logger.Info("proxy check failed",
+						slog.String("proxy_name", proxy.Name()),
+						slog.String("proxy_addr", proxy.Addr()),
+						slog.String("check_type", string(checkType)),
+						slog.Any("error", err),
+					)
 				}
 				ch <- r
 			}(ctx, checkType, f, proxy)
 		} else {
-			log.Errorln("not supported checkType: %s", checkType)
+			logger.Error("not supported checkType", slog.String("check_type", string(checkType)))
 		}
 	}
 	wg.Wait()

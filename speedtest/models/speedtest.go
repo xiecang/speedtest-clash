@@ -3,6 +3,7 @@ package models
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/metacubex/mihomo/constant"
@@ -35,7 +36,6 @@ type Cache interface {
 type ProgressConfig struct {
 	PrintProgress    bool          `json:"print_progress"`    // 是否打印进度
 	ProgressInterval time.Duration `json:"progress_interval"` // 进度打印间隔
-	PrintRealTime    bool          `json:"print_real_time"`   // 是否实时打印测速结果
 }
 
 type Options struct {
@@ -56,6 +56,7 @@ type Options struct {
 	LatencySamples          int              `json:"latency_samples"`             // 建立连接后的延迟测试次数
 	ProbeTimeout            time.Duration    `json:"probe_timeout"`               // 探活超时，用于快速淘汰失效节点
 	DelayTestUrl            string           `json:"delay_test_url"`              // 延迟测试 URL
+	Logger                  *slog.Logger     `json:"-"`                           // 日志输出，nil 时回退到 slog.Default()
 	Cache                   Cache            `json:"-"`                           // 缓存实现，不序列化
 	Proxies                 []map[string]any `json:"-"`                           // 支持传入 proxy 配置来测速
 	Progress                ProgressConfig   `json:"progress"`                    // 进度配置

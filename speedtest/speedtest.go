@@ -22,7 +22,6 @@ import (
 	"github.com/metacubex/mihomo/adapter"
 	"github.com/metacubex/mihomo/adapter/provider"
 	"github.com/metacubex/mihomo/common/convert"
-	"github.com/metacubex/mihomo/log"
 	"github.com/xiecang/speedtest-clash/speedtest/models"
 	"github.com/xiecang/speedtest-clash/speedtest/requests"
 	"gopkg.in/yaml.v3"
@@ -176,20 +175,21 @@ func (t *Test) ReadProxies(ctx context.Context, wg *sync.WaitGroup, configPathCo
 					RetryTimeOut:       3 * time.Second,
 					ProxyUrl:           proxyUrl,
 					InsecureSkipVerify: true,
+					Logger:             loggerFromOptions(t.options),
 				})
 				if err != nil {
-					log.Warnln("failed to fetch config: %s, err: %s", configPath, err)
+					warnf(t.options, "failed to fetch config: %s, err: %s", configPath, err)
 					return
 				}
 				if resp.StatusCode != http.StatusOK {
-					log.Warnln("failed to fetch config: %s, status code: %d", configPath, resp.StatusCode)
+					warnf(t.options, "failed to fetch config: %s, status code: %d", configPath, resp.StatusCode)
 					return
 				}
 				body = resp.Body
 			} else {
 				body, err = os.ReadFile(configPath)
 				if err != nil {
-					log.Warnln("failed to read local file: %s, err: %s", configPath, err)
+					warnf(t.options, "failed to read local file: %s, err: %s", configPath, err)
 					return
 				}
 			}
@@ -212,14 +212,14 @@ func (t *Test) loadProxies(ctx context.Context, wg *sync.WaitGroup, buf []byte, 
 		}
 		proxyList, err := convert.ConvertsV2Ray(buf)
 		if err != nil {
-			log.Warnln("failed to convert proxies: %s", err)
+			warnf(t.options, "failed to convert proxies: %s", err)
 			return
 		}
 		_ = t.AddProxies(ctx, proxyList)
 		return
 	}
 	if err := yaml.Unmarshal(buf, rawCfg); err != nil {
-		log.Warnln("failed to parse config: %s", err)
+		warnf(t.options, "failed to parse config: %s", err)
 		return
 	}
 	proxiesConfig := rawCfg.Proxies
@@ -232,7 +232,7 @@ func (t *Test) loadProxies(ctx context.Context, wg *sync.WaitGroup, buf []byte, 
 		go func(name string, config models.ProxyProvider) {
 			defer wg.Done()
 			if name == provider.ReservedName {
-				log.Warnln("can not defined a provider called `%s`", provider.ReservedName)
+				warnf(t.options, "can not defined a provider called `%s`", provider.ReservedName)
 				return
 			}
 			t.ReadProxies(ctx, wg, config.Url, proxyUrl)
@@ -302,7 +302,7 @@ func (t *Test) processConfig(ctx context.Context, config map[string]any) error {
 	if err != nil {
 		atomic.AddInt32(t.invalidCount, 1)
 		atomic.AddInt32(t.count, 1) // 解析失败也算处理过
-		log.Warnln("ParseProxy error: %s", err)
+		warnf(t.options, "ParseProxy error: %s", err)
 		return err
 	}
 	t.processProxy(ctx, models.CProxy{Proxy: proxy, SecretConfig: config})
@@ -424,7 +424,7 @@ func (t *Test) TestSpeedStream(ctx context.Context) (<-chan *models.CProxyWithRe
 		for {
 			select {
 			case <-ctx.Done():
-				log.Infoln("TestSpeedStream cancelled: %v", ctx.Err())
+				infof(t.options, "TestSpeedStream cancelled: %v", ctx.Err())
 				goto waitAndExit
 			case proxy, ok := <-t.proxiesCh:
 				if !ok {
@@ -439,7 +439,7 @@ func (t *Test) TestSpeedStream(ctx context.Context) (<-chan *models.CProxyWithRe
 					go func(p models.CProxy) {
 						defer func() {
 							if r := recover(); r != nil {
-								log.Errorln("worker panic: %v", r)
+								errorf(t.options, "worker panic: %v", r)
 							}
 							atomic.AddInt32(t.count, 1)
 							workerWg.Done()
@@ -448,22 +448,11 @@ func (t *Test) TestSpeedStream(ctx context.Context) (<-chan *models.CProxyWithRe
 						// 使用传入的 ctx，testspeed 内部会处理超时
 						result, err := testspeed(ctx, p, t.options)
 						if err != nil {
-							log.Errorln("[%s] test speed err: %v", p.Name(), err)
+							errorf(t.options, "[%s] test speed err: %v", p.Name(), err)
 						}
 						if result != nil {
 							if result.Alive() {
 								atomic.AddInt32(t.aliveCount, 1)
-								if t.options.Progress.PrintRealTime {
-									processed := atomic.LoadInt32(t.count)
-									total := atomic.LoadInt32(t.totalCount)
-									var percentage float64
-									if total > 0 {
-										percentage = float64(processed) / float64(total) * 100
-									}
-									// 先清除当前行（可能是进度条），再换行打印新结果
-									fmt.Printf("\r\033[K[%s] 🚀 测速完成: %-20s | 带宽: %-10s | 延迟: %-5d | 进度: %d/%d (%.1f%%)\n",
-										time.Now().Format("15:04:05"), result.Name, result.FormattedBandwidth(), result.Delay, processed, total, percentage)
-								}
 							} else {
 								atomic.AddInt32(t.invalidCount, 1)
 							}
@@ -496,6 +485,10 @@ func (t *Test) TotalCount() int32 {
 
 func (t *Test) InvalidCount() int32 {
 	return atomic.LoadInt32(t.invalidCount)
+}
+
+func (t *Test) AliveCount() int32 {
+	return atomic.LoadInt32(t.aliveCount)
 }
 
 // ProcessCount 返回已处理的节点数量
@@ -745,43 +738,8 @@ func (t *Test) Proxies() ([]map[string]interface{}, error) {
 	return ps, nil
 }
 
-func checkOptions(options *models.Options) (bool, string) {
-	if options.ConfigPath == "" && len(options.Proxies) == 0 && !options.KeepOpen {
-		return false, "配置不能为空，请至少提供 ConfigPath 或 Proxies"
-	}
-	if options.DownloadSize == 0 {
-		options.DownloadSize = 100 * 1024 * 1024
-	}
-	if options.Timeout == 0 {
-		options.Timeout = 2 * time.Minute
-	}
-	if options.ProbeTimeout == 0 {
-		options.ProbeTimeout = 5 * time.Second
-		if options.Timeout > 0 && options.Timeout < options.ProbeTimeout {
-			options.ProbeTimeout = options.Timeout
-		}
-	}
-	if options.SortField == "" {
-		options.SortField = models.SortFieldBandwidth
-	}
-	if options.LivenessAddr == "" {
-		options.LivenessAddr = models.DefaultLivenessAddr
-	}
-	if options.Concurrent == 0 {
-		options.Concurrent = cpuCount
-	}
-	if options.DelayTestUrl == "" {
-		options.DelayTestUrl = "https://i.ytimg.com/generate_204"
-	}
-	if options.Progress.ProgressInterval <= 0 {
-		options.Progress.ProgressInterval = 3 * time.Second
-	}
-
-	return true, ""
-}
-
 func NewTest(options models.Options) (*Test, error) {
-	if ok, msg := checkOptions(&options); !ok {
+	if ok, msg := normalizeOptions(&options); !ok {
 		return nil, fmt.Errorf("配置格式不正确: %s", msg)
 	}
 
@@ -872,7 +830,7 @@ func (t *Test) fireOnResult(ctx context.Context, result *models.CProxyWithResult
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
-				log.Errorln("OnResult callback panic: %v", r)
+				errorf(t.options, "OnResult callback panic: %v", r)
 			}
 		}()
 

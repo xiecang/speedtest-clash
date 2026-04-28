@@ -7,13 +7,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
 	"time"
 
 	"filippo.io/intermediates"
-	"github.com/metacubex/mihomo/log"
 )
 
 type RequestOption struct {
@@ -28,6 +28,7 @@ type RequestOption struct {
 	RetryTimeOut time.Duration // 重试超时时间
 	// 详细日志
 	Verbose bool
+	Logger  *slog.Logger
 	// 代理链接
 	ProxyUrl *url.URL
 	Client   *http.Client
@@ -66,15 +67,19 @@ func request(ctx context.Context, option *RequestOption) (*XcResponse, error) {
 		req *http.Request
 		err error
 	)
+	logger := option.Logger
+	if logger == nil {
+		logger = slog.Default()
+	}
 	option, err = checkedOption(option)
 	if err != nil {
 		if option.Verbose {
-			log.Errorln("checkedOption error: %v", err)
+			logger.Error("checkedOption error", slog.Any("error", err))
 		}
 		return nil, fmt.Errorf("checkedOption error: %w", err)
 	}
 	if option.Verbose {
-		log.Infoln("%s", requestCurl(option))
+		logger.Info("request", slog.String("curl", requestCurl(option)))
 	}
 
 	transport := &http.Transport{
@@ -101,7 +106,7 @@ func request(ctx context.Context, option *RequestOption) (*XcResponse, error) {
 	req, err = http.NewRequestWithContext(ctx, option.Method, option.URL, bytes.NewReader(option.Body))
 	if err != nil {
 		if option.Verbose {
-			log.Errorln("http.NewRequest error: %v", err)
+			logger.Error("http.NewRequest error", slog.Any("error", err))
 		}
 		return nil, fmt.Errorf("http.NewRequest error: %w", err)
 	}
@@ -112,7 +117,7 @@ func request(ctx context.Context, option *RequestOption) (*XcResponse, error) {
 	resp, err := client.Do(req)
 	if err != nil {
 		if option.Verbose {
-			log.Errorln("client.Do error: %v", err)
+			logger.Error("client.Do error", slog.Any("error", err))
 		}
 		return nil, fmt.Errorf("client.Do error: %w", err)
 	}
@@ -126,7 +131,7 @@ func request(ctx context.Context, option *RequestOption) (*XcResponse, error) {
 	body, err = io.ReadAll(resp.Body)
 	if err != nil {
 		if option.Verbose {
-			log.Errorln("io.ReadAll error: %v", err)
+			logger.Error("io.ReadAll error", slog.Any("error", err))
 		}
 		return nil, fmt.Errorf("io.ReadAll error: %w", err)
 	}

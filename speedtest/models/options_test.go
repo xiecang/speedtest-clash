@@ -3,6 +3,7 @@ package models
 import (
 	"context"
 	"errors"
+	"reflect"
 	"testing"
 	"time"
 )
@@ -35,5 +36,11 @@ func TestNewBandwidthLimiterZeroIsNil(t *testing.T) {
 	}
 	if NewBandwidthLimiter(-1) != nil {
 		t.Fatal("expected nil for maxBytesPerSec=-1")
+	}
+}
+
+func TestProgressConfigDoesNotExposePrintRealTime(t *testing.T) {
+	if _, ok := reflect.TypeOf(ProgressConfig{}).FieldByName("PrintRealTime"); ok {
+		t.Fatal("PrintRealTime should be removed from ProgressConfig")
 	}
 }

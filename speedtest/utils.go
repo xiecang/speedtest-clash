@@ -17,7 +17,6 @@ import (
 	"github.com/metacubex/mihomo/common/convert"
 	"github.com/metacubex/mihomo/common/utils"
 	C "github.com/metacubex/mihomo/constant"
-	"github.com/metacubex/mihomo/log"
 	"github.com/xiecang/speedtest-clash/speedtest/models"
 	"github.com/xiecang/speedtest-clash/speedtest/requests"
 	"gopkg.in/yaml.v3"
@@ -57,7 +56,7 @@ func testspeed(ctx context.Context, proxy models.CProxy, options *models.Options
 		if options.Cache != nil {
 			if err := options.Cache.Set(ctx, key, r); err != nil {
 				// 缓存失败不影响返回结果
-				log.Warnln("failed to cache result: %v", err)
+				warnf(options, "failed to cache result: %v", err)
 			}
 		}
 		return r, nil
@@ -275,7 +274,7 @@ loop:
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			log.Debugln("[%s] [%d] 开始探测 URL: %s", s.name, i, url)
+			debugf(s.option, "[%s] [%d] 开始探测 URL: %s", s.name, i, url)
 			var (
 				successSamples int
 				sumDelay       int64
@@ -298,19 +297,19 @@ loop:
 				resp, err := s.client.Do(req)
 				if err != nil {
 					lastErr = err
-					log.Debugln("[%s] [%d-%d] 探测失败: %v", s.name, i, j, err)
+					debugf(s.option, "[%s] [%d-%d] 探测失败: %v", s.name, i, j, err)
 					break
 				}
 				resp.Body.Close()
 
 				if !expectedStatus.Check(uint16(resp.StatusCode)) {
 					lastErr = fmt.Errorf("status code: %d", resp.StatusCode)
-					log.Debugln("[%s] [%d-%d] 状态码错误: %d", s.name, i, j, resp.StatusCode)
+					debugf(s.option, "[%s] [%d-%d] 状态码错误: %d", s.name, i, j, resp.StatusCode)
 					break
 				}
 
 				delay := uint16(time.Since(start).Milliseconds())
-				log.Debugln("[%s] [%d-%d] 探测完成: %dms", s.name, i, j, delay)
+				debugf(s.option, "[%s] [%d-%d] 探测完成: %dms", s.name, i, j, delay)
 
 				if j == 0 {
 					firstDelay = delay
@@ -377,7 +376,7 @@ loop:
 	if successCount == 0 {
 		// Last-ditch effort: If all parallel probes failed (perhaps due to concurrency noise),
 		// try one sequential probe to confirm "Dead" status.
-		log.Debugln("[%s] 并行探测全部失败, 尝试串行补偿探测: %s", s.name, url)
+		debugf(s.option, "[%s] 并行探测全部失败, 尝试串行补偿探测: %s", s.name, url)
 		expectedStatus, _ := utils.NewUnsignedRanges[uint16]("200,204")
 		start := time.Now()
 		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
@@ -387,7 +386,7 @@ loop:
 			resp.Body.Close()
 			if expectedStatus.Check(uint16(resp.StatusCode)) {
 				delay := uint16(time.Since(start).Milliseconds())
-				log.Debugln("[%s] 补偿探测成功: %dms", s.name, delay)
+				debugf(s.option, "[%s] 补偿探测成功: %dms", s.name, delay)
 				return latencyStats{
 					min:      delay,
 					p50:      delay,
@@ -396,9 +395,9 @@ loop:
 					lossRate: 0.0,
 				}, nil
 			}
-			log.Debugln("[%s] 补偿探测状态码错误: %d", s.name, resp.StatusCode)
+			debugf(s.option, "[%s] 补偿探测状态码错误: %d", s.name, resp.StatusCode)
 		} else {
-			log.Debugln("[%s] 补偿探测失败: %v", s.name, err)
+			debugf(s.option, "[%s] 补偿探测失败: %v", s.name, err)
 		}
 		return latencyStats{lossRate: 1.0}, lastErr
 	}
@@ -423,7 +422,7 @@ loop:
 	jitter := uint16(sumDev / float64(successCount))
 	lossRate := 1.0 - (float64(successCount) / float64(tryCount))
 
-	log.Debugln("[%s] 探测结果汇总: Delay=%d, Jitter=%d, LossRate=%.2f", s.name, minDelay, jitter, lossRate)
+	debugf(s.option, "[%s] 探测结果汇总: Delay=%d, Jitter=%d, LossRate=%.2f", s.name, minDelay, jitter, lossRate)
 
 	return latencyStats{
 		min:      minDelay,
@@ -508,7 +507,7 @@ func (s *proxyTest) Test(ctx context.Context) *models.Result {
 	}
 	delayStats := s.testDelay(probeCtx)
 	if delayStats.min == 0 || delayStats.lossRate >= 1.0 {
-		log.Debugln("[%s] 节点不可用 (Delay: %v, Loss: %.2f), 跳过后续测试", name, delayStats.min, delayStats.lossRate)
+		debugf(s.option, "[%s] 节点不可用 (Delay: %v, Loss: %.2f), 跳过后续测试", name, delayStats.min, delayStats.lossRate)
 		return &models.Result{
 			Name:         name,
 			Delay:        delayStats.min,
@@ -547,7 +546,7 @@ func (s *proxyTest) Test(ctx context.Context) *models.Result {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		countryR := checkProxy(ctx, proxy, []models.CheckType{models.CheckTypeCountry})
+		countryR := checkProxy(ctx, proxy, []models.CheckType{models.CheckTypeCountry}, loggerFromOptions(option))
 		mu.Lock()
 		if len(countryR) > 0 {
 			country = countryR[0].Value
@@ -559,7 +558,7 @@ func (s *proxyTest) Test(ctx context.Context) *models.Result {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		results := checkProxy(ctx, proxy, checkTypes)
+		results := checkProxy(ctx, proxy, checkTypes, loggerFromOptions(option))
 		mu.Lock()
 		checkResults = results
 		mu.Unlock()
@@ -589,12 +588,12 @@ func (s *proxyTest) Test(ctx context.Context) *models.Result {
 		// 正常完成
 	case <-ctx.Done():
 		// 超时或取消，尽量保留已测得的部分数据
-		log.Debugln("[%s] 测试流程超时或取消", name)
+		debugf(s.option, "[%s] 测试流程超时或取消", name)
 		<-done // 等待子协程清理并更新变量
 	}
 
 	if bandwidthErr != nil {
-		log.Debugln("[%s] 带宽测试失败: %v", name, bandwidthErr)
+		debugf(s.option, "[%s] 带宽测试失败: %v", name, bandwidthErr)
 	}
 
 	if country == "" {
