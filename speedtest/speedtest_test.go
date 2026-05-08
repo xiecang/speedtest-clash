@@ -3,7 +3,13 @@ package speedtest
 import (
 	"context"
 	"fmt"
+	"io"
+	"net/http"
+	"os"
+	"path/filepath"
 	"reflect"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -44,6 +50,44 @@ func TestProxyDisableBandwidthTestSkipsDownload(t *testing.T) {
 	assert.Equal(t, int64(0), downloadBytes)
 }
 
+type firstReadRecorder struct {
+	start     time.Time
+	firstRead time.Time
+	once      sync.Once
+	data      []byte
+}
+
+func (r *firstReadRecorder) Read(p []byte) (int, error) {
+	r.once.Do(func() {
+		r.firstRead = time.Now()
+	})
+	if len(r.data) == 0 {
+		return 0, io.EOF
+	}
+	n := copy(p, r.data)
+	r.data = r.data[n:]
+	return n, nil
+}
+
+func TestCopyLimitedThrottlesBeforeReadingFirstChunk(t *testing.T) {
+	reader := &firstReadRecorder{
+		start: time.Now(),
+		data:  make([]byte, 32*1024),
+	}
+	p := &proxyTest{
+		option:           &models.Options{},
+		bandwidthLimiter: models.NewBandwidthLimiter(128 * 1024),
+	}
+
+	n, err := p.copyLimited(context.Background(), io.Discard, reader)
+
+	assert.NoError(t, err)
+	assert.Equal(t, int64(32*1024), n)
+	if elapsed := reader.firstRead.Sub(reader.start); elapsed < 100*time.Millisecond {
+		t.Fatalf("first Read happened after %s, want it throttled before network read", elapsed)
+	}
+}
+
 func TestPercentileDelay(t *testing.T) {
 	delays := []uint16{10, 20, 30, 40, 50}
 
@@ -52,9 +96,136 @@ func TestPercentileDelay(t *testing.T) {
 	assert.Equal(t, uint16(50), percentileDelay(delays, 0.95))
 }
 
+type scriptedLatencyStep struct {
+	delay  time.Duration
+	status int
+	err    error
+}
+
+type scriptedLatencyTransport struct {
+	steps []scriptedLatencyStep
+	index int
+}
+
+func enableLatencyMetrics(t *testing.T, opts *models.Options) {
+	t.Helper()
+
+	value := reflect.ValueOf(opts).Elem().FieldByName("EnableLatencyMetrics")
+	if !value.IsValid() {
+		t.Fatal("Options.EnableLatencyMetrics field is missing")
+	}
+	if value.Kind() != reflect.Bool || !value.CanSet() {
+		t.Fatal("Options.EnableLatencyMetrics must be a settable bool")
+	}
+
+	value.SetBool(true)
+}
+
+func (t *scriptedLatencyTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if t.index >= len(t.steps) {
+		return nil, fmt.Errorf("unexpected request %d", t.index)
+	}
+	step := t.steps[t.index]
+	t.index++
+
+	if step.delay > 0 {
+		timer := time.NewTimer(step.delay)
+		defer timer.Stop()
+		select {
+		case <-req.Context().Done():
+			return nil, req.Context().Err()
+		case <-timer.C:
+		}
+	}
+
+	if step.err != nil {
+		return nil, step.err
+	}
+
+	return &http.Response{
+		StatusCode: step.status,
+		Body:       io.NopCloser(strings.NewReader("")),
+		Header:     make(http.Header),
+		Request:    req,
+	}, nil
+}
+
+func TestTestURLDefaultModeLeavesLatencyMetricsUnset(t *testing.T) {
+	p := &proxyTest{
+		name:   "proxy",
+		option: &models.Options{},
+		client: &http.Client{Transport: &scriptedLatencyTransport{steps: []scriptedLatencyStep{
+			{delay: 20 * time.Millisecond, status: http.StatusNoContent},
+		}}},
+	}
+
+	stats, err := p.testURL(context.Background(), "https://example.com/generate_204", 1)
+
+	assert.NoError(t, err)
+	assert.NotZero(t, stats.min)
+	assert.Zero(t, stats.p50)
+	assert.Zero(t, stats.p90)
+	assert.Zero(t, stats.p95)
+	assert.Zero(t, stats.jitter)
+	assert.Zero(t, stats.lossRate)
+}
+
+func TestTestURLOmitsPercentilesWhenMeasuredLatencySamplesAreInsufficient(t *testing.T) {
+	opts := &models.Options{LatencySamples: 2}
+	enableLatencyMetrics(t, opts)
+
+	p := &proxyTest{
+		name:   "proxy",
+		option: opts,
+		client: &http.Client{Transport: &scriptedLatencyTransport{steps: []scriptedLatencyStep{
+			{delay: 20 * time.Millisecond, status: http.StatusNoContent},
+			{delay: 40 * time.Millisecond, status: http.StatusNoContent},
+			{err: context.DeadlineExceeded},
+		}}},
+	}
+
+	stats, err := p.testURL(context.Background(), "https://example.com/generate_204", 1)
+
+	assert.NoError(t, err)
+	assert.NotZero(t, stats.min)
+	assert.Zero(t, stats.p50)
+	assert.Zero(t, stats.p90)
+	assert.Zero(t, stats.p95)
+	assert.Zero(t, stats.jitter)
+	assert.InDelta(t, 0.5, stats.lossRate, 0.001)
+}
+
+func TestTestURLComputesPercentilesFromMeasuredLatencySamples(t *testing.T) {
+	opts := &models.Options{LatencySamples: 3}
+	enableLatencyMetrics(t, opts)
+
+	p := &proxyTest{
+		name:   "proxy",
+		option: opts,
+		client: &http.Client{Transport: &scriptedLatencyTransport{steps: []scriptedLatencyStep{
+			{delay: 10 * time.Millisecond, status: http.StatusNoContent},
+			{delay: 40 * time.Millisecond, status: http.StatusNoContent},
+			{delay: 80 * time.Millisecond, status: http.StatusNoContent},
+			{delay: 120 * time.Millisecond, status: http.StatusNoContent},
+		}}},
+	}
+
+	stats, err := p.testURL(context.Background(), "https://example.com/generate_204", 1)
+
+	assert.NoError(t, err)
+	assert.NotZero(t, stats.min)
+	assert.Greater(t, stats.p50, uint16(0))
+	assert.Greater(t, stats.p90, stats.p50)
+	assert.Greater(t, stats.p95, stats.p50)
+	assert.Greater(t, stats.jitter, uint16(0))
+	assert.Zero(t, stats.lossRate)
+}
+
 func TestNewTestDefaultsLoggerAndExposesAliveCount(t *testing.T) {
 	tester, err := NewTest(models.Options{
-		KeepOpen: true,
+		Proxies: []map[string]any{
+			{"name": "proxy1", "type": "ss", "server": "1.1.1.1", "port": 8388, "cipher": "aes-128-gcm", "password": "pass"},
+		},
 	})
 	if err != nil {
 		t.Fatalf("NewTest returned error: %v", err)
@@ -83,6 +254,95 @@ func TestNewTestDefaultsLoggerAndExposesAliveCount(t *testing.T) {
 	if got := values[0].Interface().(int32); got != 0 {
 		t.Fatalf("AliveCount() = %d, want 0", got)
 	}
+}
+
+func TestOptionsUseMBPerSecLimitAndRemoveKeepOpen(t *testing.T) {
+	optionType := reflect.TypeOf(models.Options{})
+	if _, ok := optionType.FieldByName("KeepOpen"); ok {
+		t.Fatal("Options.KeepOpen should be removed")
+	}
+	if _, ok := optionType.FieldByName("MaxBandwidthBytesPerSec"); ok {
+		t.Fatal("Options.MaxBandwidthBytesPerSec should be replaced")
+	}
+	field, ok := optionType.FieldByName("MaxBandwidthMBPerSec")
+	if !ok {
+		t.Fatal("Options.MaxBandwidthMBPerSec is missing")
+	}
+	if field.Type.Kind() != reflect.Float64 {
+		t.Fatalf("MaxBandwidthMBPerSec kind = %s, want float64", field.Type.Kind())
+	}
+	if got := field.Tag.Get("json"); got != "max_bandwidth_mb_per_sec" {
+		t.Fatalf("MaxBandwidthMBPerSec json tag = %q", got)
+	}
+}
+
+func TestRunStreamAcceptsProxiesAddedAfterRun(t *testing.T) {
+	cache := &mockCache{results: map[string]*models.CProxyWithResult{
+		"stream-proxy": {Result: models.Result{Name: "stream-proxy", Delay: 100}},
+	}}
+	tester, err := NewTest(models.Options{
+		Concurrent: 1,
+		Cache:      cache,
+		Timeout:    time.Second,
+	})
+	assert.NoError(t, err)
+	defer tester.Close()
+
+	resultsCh, err := tester.RunStream(context.Background())
+	assert.NoError(t, err)
+
+	err = tester.AddProxies(context.Background(), []map[string]any{
+		{"name": "stream-proxy", "type": "ss", "server": "1.1.1.1", "port": 8388, "cipher": "aes-128-gcm", "password": "pass"},
+	})
+	assert.NoError(t, err)
+	tester.CloseInput()
+
+	var results []*models.CProxyWithResult
+	for result := range resultsCh {
+		results = append(results, result)
+	}
+
+	assert.Len(t, results, 1)
+	assert.Equal(t, "stream-proxy", results[0].Result.Name)
+}
+
+func TestRunStreamAcceptsProxyURLAddedAfterRun(t *testing.T) {
+	cache := &mockCache{results: map[string]*models.CProxyWithResult{
+		"url-proxy": {Result: models.Result{Name: "url-proxy", Delay: 100}},
+	}}
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "proxies.yaml")
+	err := os.WriteFile(configPath, []byte(`
+proxies:
+  - name: url-proxy
+    type: ss
+    server: 1.1.1.1
+    port: 8388
+    cipher: aes-128-gcm
+    password: pass
+`), 0o600)
+	assert.NoError(t, err)
+
+	tester, err := NewTest(models.Options{
+		Concurrent: 1,
+		Cache:      cache,
+		Timeout:    time.Second,
+	})
+	assert.NoError(t, err)
+	defer tester.Close()
+
+	resultsCh, err := tester.RunStream(context.Background())
+	assert.NoError(t, err)
+	assert.NoError(t, tester.AddProxyURL(context.Background(), configPath))
+	tester.CloseInput()
+
+	var results []*models.CProxyWithResult
+	for result := range resultsCh {
+		results = append(results, result)
+	}
+
+	assert.Len(t, results, 1)
+	assert.Equal(t, "url-proxy", results[0].Result.Name)
 }
 
 func TestCandidateLimit(t *testing.T) {
@@ -212,6 +472,10 @@ func TestTestSpeedTableDriven(t *testing.T) {
 }
 
 func TestTestSpeedWithFile(t *testing.T) {
+	if os.Getenv("SPEEDTEST_CLASH_RUN_NETWORK_TESTS") != "1" {
+		t.Skip("skipping network integration test; set SPEEDTEST_CLASH_RUN_NETWORK_TESTS=1 to run")
+	}
+
 	tests := []struct {
 		name       string
 		configPath string

@@ -26,7 +26,8 @@ var (
 	sortField          = flag.String("sort", "b", "sort field for testing proxies, b for bandwidth, t for TTFB")
 	output             = flag.String("output", "", "output result to csv/yaml file")
 	bandwidthConcur    = flag.Int("concurrent-bandwidth", 4, "concurrency for bandwidth testing")
-	latencySamples     = flag.Int("latency-samples", 1, "samples for latency testing after connection established")
+	enableLatencyStats = flag.Bool("enable-latency-metrics", false, "collect latency p50/p90/p95/jitter/loss-rate metrics")
+	latencySamples     = flag.Int("latency-samples", 3, "measured latency samples after warmup when latency metrics are enabled")
 	delayUrl           = flag.String("delay-url", "", "URL to use for latency testing")
 )
 
@@ -46,6 +47,7 @@ func main() {
 		NameRegexContain:     *filterRegexConfig,
 		SortField:            models.SortField(*sortField),
 		BandwidthConcurrency: *bandwidthConcur,
+		EnableLatencyMetrics: *enableLatencyStats,
 		LatencySamples:       *latencySamples,
 		DelayTestUrl:         *delayUrl,
 		Progress:             models.ProgressConfig{PrintProgress: true},

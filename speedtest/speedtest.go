@@ -1,13 +1,10 @@
 package speedtest
 
 import (
-	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/http"
 	"net/url"
 	"os"
 	"regexp"
@@ -20,17 +17,22 @@ import (
 	"time"
 
 	"github.com/metacubex/mihomo/adapter"
-	"github.com/metacubex/mihomo/adapter/provider"
-	"github.com/metacubex/mihomo/common/convert"
 	"github.com/xiecang/speedtest-clash/speedtest/models"
-	"github.com/xiecang/speedtest-clash/speedtest/requests"
-	"gopkg.in/yaml.v3"
 )
 
 var (
 	ErrSpeedNotTest = errors.New("请先测速")
 	ErrSpeedNoAlive = errors.New("无健康节点")
 	cpuCount        = runtime.NumCPU()
+)
+
+type testState int
+
+const (
+	stateNew testState = iota
+	stateRunning
+	stateInputClosed
+	stateStopped
 )
 
 type Test struct {
@@ -44,6 +46,10 @@ type Test struct {
 	regexpNonContain *regexp.Regexp
 
 	proxiesCh chan models.CProxy
+	cancel    context.CancelFunc
+	stateMu   sync.Mutex
+	state     testState
+	closeOnce sync.Once
 	//
 	totalCount   *int32 // 计数器，记录总节点数量
 	count        *int32 // 计数器，记录已测速的节点数量
@@ -54,6 +60,8 @@ type Test struct {
 	logTicker *time.Ticker
 	stopChan  chan struct{} // 用于停止进度输出
 	testing   atomic.Bool   // 测速状态
+
+	bandwidthLimiter *models.BandwidthLimiter
 }
 
 func (t *Test) checkAndLogProgress() {
@@ -156,99 +164,6 @@ func (t *Test) proxyShouldKeep(proxy models.CProxy) bool {
 	return true
 }
 
-func (t *Test) ReadProxies(ctx context.Context, wg *sync.WaitGroup, configPathConfig string, proxyUrl *url.URL) {
-	paths := strings.Split(configPathConfig, "|")
-	wg.Add(len(paths))
-
-	for _, configPath := range paths {
-		go func(configPath string) {
-			defer wg.Done()
-			var body []byte
-			var err error
-			if strings.HasPrefix(configPath, "http") {
-				resp, err := requests.Request(ctx, &requests.RequestOption{
-					Method:             http.MethodGet,
-					URL:                configPath,
-					Headers:            map[string]string{"User-Agent": "clash-meta"},
-					Timeout:            60 * time.Second,
-					RetryTimes:         3,
-					RetryTimeOut:       3 * time.Second,
-					ProxyUrl:           proxyUrl,
-					InsecureSkipVerify: true,
-					Logger:             loggerFromOptions(t.options),
-				})
-				if err != nil {
-					warnf(t.options, "failed to fetch config: %s, err: %s", configPath, err)
-					return
-				}
-				if resp.StatusCode != http.StatusOK {
-					warnf(t.options, "failed to fetch config: %s, status code: %d", configPath, resp.StatusCode)
-					return
-				}
-				body = resp.Body
-			} else {
-				body, err = os.ReadFile(configPath)
-				if err != nil {
-					warnf(t.options, "failed to read local file: %s, err: %s", configPath, err)
-					return
-				}
-			}
-
-			t.loadProxies(ctx, wg, body, proxyUrl)
-
-		}(configPath)
-	}
-
-}
-
-func (t *Test) loadProxies(ctx context.Context, wg *sync.WaitGroup, buf []byte, proxyUrl *url.URL) {
-	rawCfg := &models.RawConfig{
-		Proxies: []map[string]any{},
-	}
-	if !bytes.Contains(buf, []byte("server")) {
-		if bytes.Contains(buf, []byte("://")) {
-			// 纯订阅
-			buf = []byte(base64.StdEncoding.EncodeToString(buf))
-		}
-		proxyList, err := convert.ConvertsV2Ray(buf)
-		if err != nil {
-			warnf(t.options, "failed to convert proxies: %s", err)
-			return
-		}
-		_ = t.AddProxies(ctx, proxyList)
-		return
-	}
-	if err := yaml.Unmarshal(buf, rawCfg); err != nil {
-		warnf(t.options, "failed to parse config: %s", err)
-		return
-	}
-	proxiesConfig := rawCfg.Proxies
-	providersConfig := rawCfg.Providers
-
-	_ = t.AddProxies(ctx, proxiesConfig)
-
-	for name, config := range providersConfig {
-		wg.Add(1)
-		go func(name string, config models.ProxyProvider) {
-			defer wg.Done()
-			if name == provider.ReservedName {
-				warnf(t.options, "can not defined a provider called `%s`", provider.ReservedName)
-				return
-			}
-			t.ReadProxies(ctx, wg, config.Url, proxyUrl)
-		}(name, config)
-	}
-
-}
-
-func (t *Test) loadProxiesFromOptions(ctx context.Context) {
-	if len(t.options.Proxies) == 0 {
-		return
-	}
-
-	_ = t.AddProxies(ctx, t.options.Proxies)
-}
-
 // processProxy 内部测速节点处理核心逻辑（计入已处理 count，但不计入总量 totalCount）
 func (t *Test) processProxy(ctx context.Context, proxy models.CProxy) {
 	if !t.proxyShouldKeep(proxy) {
@@ -269,10 +184,25 @@ func (t *Test) processProxy(ctx context.Context, proxy models.CProxy) {
 	}
 }
 
+func (t *Test) ensureCanAdd() error {
+	t.stateMu.Lock()
+	defer t.stateMu.Unlock()
+	switch t.state {
+	case stateRunning:
+		return nil
+	case stateInputClosed:
+		return fmt.Errorf("测速输入已关闭")
+	case stateStopped:
+		return fmt.Errorf("测速已停止")
+	default:
+		return fmt.Errorf("测速未开始")
+	}
+}
+
 // AddProxy 实时添加一个待测速节点
 func (t *Test) AddProxy(ctx context.Context, proxy models.CProxy) error {
-	if !t.testing.Load() {
-		return fmt.Errorf("测速未开始或已结束")
+	if err := t.ensureCanAdd(); err != nil {
+		return err
 	}
 	atomic.AddInt32(t.totalCount, 1) // 外部调用入口，统一在此增加总量
 	t.processProxy(ctx, proxy)
@@ -311,8 +241,11 @@ func (t *Test) processConfig(ctx context.Context, config map[string]any) error {
 
 // AddProxies 实时批量添加待测速节点配置
 func (t *Test) AddProxies(ctx context.Context, configs []map[string]any) error {
-	if !t.testing.Load() || len(configs) == 0 {
+	if len(configs) == 0 {
 		return nil
+	}
+	if err := t.ensureCanAdd(); err != nil {
+		return err
 	}
 
 	concurrency := runtime.GOMAXPROCS(0) * 2
@@ -346,11 +279,48 @@ waitAndReturn:
 	return ctxErr
 }
 
+func (t *Test) AddProxyURL(ctx context.Context, source string) error {
+	return t.AddProxyURLs(ctx, []string{source})
+}
+
+func (t *Test) AddProxyURLs(ctx context.Context, sources []string) error {
+	if len(sources) == 0 {
+		return nil
+	}
+	if err := t.ensureCanAdd(); err != nil {
+		return err
+	}
+	loader := &ProxySourceLoader{ProxyURL: t.proxyUrl, Options: t.options}
+	return loader.LoadManyStream(ctx, sources, func(proxies []map[string]any) error {
+		return t.AddProxies(ctx, proxies)
+	})
+}
+
 func (t *Test) TestSpeed(ctx context.Context) ([]models.CProxyWithResult, error) {
-	resultsCh, err := t.TestSpeedStream(ctx)
+	if t.options.ConfigPath == "" && len(t.options.Proxies) == 0 {
+		return nil, fmt.Errorf("配置不能为空，请至少提供 ConfigPath 或 Proxies")
+	}
+	resultsCh, err := t.RunStream(ctx)
 	if err != nil {
 		return nil, err
 	}
+	addDone := make(chan error, 1)
+	go func() {
+		defer t.CloseInput()
+		if t.options.ConfigPath != "" {
+			if err := t.AddProxyURL(ctx, t.options.ConfigPath); err != nil {
+				addDone <- err
+				return
+			}
+		}
+		if len(t.options.Proxies) > 0 {
+			if err := t.AddProxies(ctx, t.options.Proxies); err != nil {
+				addDone <- err
+				return
+			}
+		}
+		addDone <- nil
+	}()
 
 	var results []models.CProxyWithResult
 	var aliveProxies []models.CProxyWithResult
@@ -360,6 +330,9 @@ func (t *Test) TestSpeed(ctx context.Context) ([]models.CProxyWithResult, error)
 			aliveProxies = append(aliveProxies, *result)
 		}
 	}
+	if err := <-addDone; err != nil {
+		return nil, err
+	}
 
 	t._testedSpeed = true
 	t.results = results
@@ -367,34 +340,32 @@ func (t *Test) TestSpeed(ctx context.Context) ([]models.CProxyWithResult, error)
 	return t.results, nil
 }
 
-func (t *Test) TestSpeedStream(ctx context.Context) (<-chan *models.CProxyWithResult, error) {
+func (t *Test) RunStream(ctx context.Context) (<-chan *models.CProxyWithResult, error) {
 	// 检查是否已经在测速
-	if t.testing.Load() {
+	t.stateMu.Lock()
+	if t.state == stateRunning {
+		t.stateMu.Unlock()
 		return nil, fmt.Errorf("测速正在进行中，请等待完成")
 	}
+	if t.state == stateStopped {
+		t.stateMu.Unlock()
+		return nil, fmt.Errorf("测速已停止")
+	}
+	t.state = stateRunning
+	t.closeOnce = sync.Once{}
+	t.stateMu.Unlock()
 
 	t.testing.Store(true)
 
 	// 重置/初始化状态
 	t.proxiesCh = make(chan models.CProxy, cpuCount*10)
 	t.stopChan = make(chan struct{})
+	streamCtx, cancel := context.WithCancel(ctx)
+	t.cancel = cancel
 	atomic.StoreInt32(t.count, 0)
 	atomic.StoreInt32(t.totalCount, 0)
 	atomic.StoreInt32(t.invalidCount, 0)
 	atomic.StoreInt32(t.aliveCount, 0)
-
-	var wg sync.WaitGroup
-
-	if t.options.ConfigPath != "" {
-		t.ReadProxies(ctx, &wg, t.options.ConfigPath, t.proxyUrl)
-	}
-	if len(t.options.Proxies) > 0 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			t.loadProxiesFromOptions(ctx)
-		}()
-	}
 
 	t.startAutoProgress()
 
@@ -410,21 +381,19 @@ func (t *Test) TestSpeedStream(ctx context.Context) (<-chan *models.CProxyWithRe
 	go func() {
 		defer func() {
 			t.testing.Store(false)
+			t.stateMu.Lock()
+			if t.state == stateRunning {
+				t.state = stateInputClosed
+			}
+			t.stateMu.Unlock()
 			close(resultsStream)
 			t.stopProgress()
 		}()
 
-		go func() {
-			wg.Wait()
-			if !t.options.KeepOpen {
-				t.CloseProxies()
-			}
-		}()
-
 		for {
 			select {
-			case <-ctx.Done():
-				infof(t.options, "TestSpeedStream cancelled: %v", ctx.Err())
+			case <-streamCtx.Done():
+				infof(t.options, "RunStream cancelled: %v", streamCtx.Err())
 				goto waitAndExit
 			case proxy, ok := <-t.proxiesCh:
 				if !ok {
@@ -432,7 +401,7 @@ func (t *Test) TestSpeedStream(ctx context.Context) (<-chan *models.CProxyWithRe
 				}
 
 				select {
-				case <-ctx.Done():
+				case <-streamCtx.Done():
 					goto waitAndExit
 				case sem <- struct{}{}:
 					workerWg.Add(1)
@@ -446,7 +415,7 @@ func (t *Test) TestSpeedStream(ctx context.Context) (<-chan *models.CProxyWithRe
 							<-sem
 						}()
 						// 使用传入的 ctx，testspeed 内部会处理超时
-						result, err := testspeed(ctx, p, t.options)
+						result, err := testspeed(streamCtx, p, t.options, t.bandwidthLimiter)
 						if err != nil {
 							errorf(t.options, "[%s] test speed err: %v", p.Name(), err)
 						}
@@ -458,7 +427,7 @@ func (t *Test) TestSpeedStream(ctx context.Context) (<-chan *models.CProxyWithRe
 							}
 
 							select {
-							case <-ctx.Done():
+							case <-streamCtx.Done():
 							case resultsStream <- result:
 							}
 						} else {
@@ -466,7 +435,7 @@ func (t *Test) TestSpeedStream(ctx context.Context) (<-chan *models.CProxyWithRe
 						}
 						// 实时回调（无论成功还是失败，均触发）
 						if result != nil {
-							t.fireOnResult(ctx, result)
+							t.fireOnResult(streamCtx, result)
 						}
 					}(proxy)
 				}
@@ -773,6 +742,8 @@ func NewTest(options models.Options) (*Test, error) {
 		proxyUrl:         proxyUrl,
 		regexpContain:    regexpContain,
 		regexpNonContain: regexpNonContain,
+		state:            stateNew,
+		bandwidthLimiter: models.NewBandwidthLimiter(int64(options.MaxBandwidthMBPerSec * 1024 * 1024)),
 		proxiesCh:        make(chan models.CProxy, cpuCount*10),
 		totalCount:       new(int32),
 		count:            new(int32),
@@ -800,22 +771,38 @@ func (t *Test) stopProgress() {
 
 // Close 关闭测试实例，清理资源
 func (t *Test) Close() error {
+	t.Stop()
 	t.stopProgress()
-
-	if t.options.Cache != nil {
-		return t.options.Cache.Close()
-	}
 
 	return nil
 }
 
-func (t *Test) CloseProxies() {
-	if t.testing.Load() {
-		defer func() {
-			recover() // 防止重复关闭 panic
-		}()
-		close(t.proxiesCh)
+func (t *Test) CloseInput() {
+	t.closeOnce.Do(func() {
+		t.stateMu.Lock()
+		if t.state == stateRunning {
+			t.state = stateInputClosed
+		}
+		t.stateMu.Unlock()
+		if t.proxiesCh != nil {
+			close(t.proxiesCh)
+		}
+	})
+}
+
+func (t *Test) Stop() {
+	t.stateMu.Lock()
+	if t.state == stateStopped {
+		t.stateMu.Unlock()
+		return
 	}
+	t.state = stateStopped
+	cancel := t.cancel
+	t.stateMu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	t.CloseInput()
 }
 
 // fireOnResult 安全地调用用户设置的 OnResult 回调。

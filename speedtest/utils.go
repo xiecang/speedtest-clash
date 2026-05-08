@@ -22,7 +22,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-func testspeed(ctx context.Context, proxy models.CProxy, options *models.Options) (*models.CProxyWithResult, error) {
+func testspeed(ctx context.Context, proxy models.CProxy, options *models.Options, limiter *models.BandwidthLimiter) (*models.CProxyWithResult, error) {
 	var key string
 	if options.Cache != nil {
 		// 生成缓存键
@@ -44,7 +44,7 @@ func testspeed(ctx context.Context, proxy models.CProxy, options *models.Options
 		if n, ok := proxy.SecretConfig["name"].(string); ok && n != "" {
 			name = n
 		}
-		result := TestProxy(ctx, name, proxy, options)
+		result := TestProxy(ctx, name, proxy, options, limiter)
 		if result == nil {
 			return nil, fmt.Errorf("test proxy returned nil result")
 		}
@@ -77,7 +77,7 @@ type proxyTest struct {
 	client *http.Client
 }
 
-func newProxyTest(name string, proxy C.Proxy, option *models.Options) *proxyTest {
+func newProxyTest(name string, proxy C.Proxy, option *models.Options, limiter *models.BandwidthLimiter) *proxyTest {
 	// Use 0 timeout for the client and rely on the context for timeouts.
 	// This is more flexible for bandwidth and latency testing.
 	client := requests.GetClient(proxy, 0)
@@ -86,7 +86,7 @@ func newProxyTest(name string, proxy C.Proxy, option *models.Options) *proxyTest
 		option:           option,
 		proxy:            proxy,
 		client:           client,
-		bandwidthLimiter: models.NewBandwidthLimiter(option.MaxBandwidthBytesPerSec),
+		bandwidthLimiter: limiter,
 	}
 }
 
@@ -152,7 +152,7 @@ func (s *proxyTest) testBandwidth(ctx context.Context) (time.Duration, float64, 
 				return
 			}
 
-			n, err := s.copyLimited(ctx, io.Discard, io.LimitReader(resp.Body, chunkSize))
+			n, err := s.copyLimitedN(ctx, io.Discard, resp.Body, chunkSize)
 			mu.Lock()
 			// Always tally downloaded bytes, even on a partial read that ended with
 			// an error (e.g. context deadline mid-download).  This matches the old
@@ -197,25 +197,40 @@ func (s *proxyTest) testBandwidth(ctx context.Context) (time.Duration, float64, 
 }
 
 func (s *proxyTest) copyLimited(ctx context.Context, dst io.Writer, src io.Reader) (int64, error) {
+	return s.copyLimitedN(ctx, dst, src, -1)
+}
+
+func (s *proxyTest) copyLimitedN(ctx context.Context, dst io.Writer, src io.Reader, maxBytes int64) (int64, error) {
 	const bufSize = 32 * 1024 // must match models.bandwidthBurstBytes
 	buf := make([]byte, bufSize)
 	var written int64
+	remaining := maxBytes
 	for {
-		nr, er := src.Read(buf)
+		if remaining == 0 {
+			return written, nil
+		}
+		readSize := bufSize
+		if remaining > 0 && remaining < int64(readSize) {
+			readSize = int(remaining)
+		}
+		if err := s.bandwidthLimiter.Wait(ctx, int64(readSize)); err != nil {
+			return written, err
+		}
+
+		nr, er := src.Read(buf[:readSize])
 		if nr > 0 {
 			nw, ew := dst.Write(buf[:nr])
 			if nw > 0 {
 				written += int64(nw)
+				if remaining > 0 {
+					remaining -= int64(nw)
+				}
 			}
 			if ew != nil {
 				return written, ew
 			}
 			if nr != nw {
 				return written, io.ErrShortWrite
-			}
-			// Throttle based on actual bytes read, not buffer capacity.
-			if err := s.bandwidthLimiter.Wait(ctx, int64(nr)); err != nil {
-				return written, err
 			}
 		}
 		if er != nil {
@@ -251,18 +266,33 @@ type latencyStats struct {
 	lossRate float64
 }
 
-func (s *proxyTest) testURL(ctx context.Context, url string, tryCount int) (latencyStats, error) {
+func (s *proxyTest) requestDelay(ctx context.Context, url string) (uint16, error) {
+	expectedStatus, _ := utils.NewUnsignedRanges[uint16]("200,204")
+	start := time.Now()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return 0, err
+	}
+	req.Header.Set("User-Agent", convert.RandUserAgent())
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	resp.Body.Close()
+
+	if !expectedStatus.Check(uint16(resp.StatusCode)) {
+		return 0, fmt.Errorf("status code: %d", resp.StatusCode)
+	}
+
+	return uint16(time.Since(start).Milliseconds()), nil
+}
+
+func (s *proxyTest) probeURLMinDelay(ctx context.Context, url string, tryCount int) (uint16, error) {
 	results := make(chan urlResult, tryCount)
 	var wg sync.WaitGroup
 
-	latencySamples := s.option.LatencySamples
-	if latencySamples <= 0 {
-		latencySamples = 3
-	}
-
 loop:
 	for i := 0; i < tryCount; i++ {
-		// Stagger probe launches slightly to reduce instantaneous burst noise in high concurrency
 		if i > 0 {
 			select {
 			case <-time.After(time.Duration(5+rand.Intn(6)) * time.Millisecond):
@@ -275,79 +305,15 @@ loop:
 		go func(i int) {
 			defer wg.Done()
 			debugf(s.option, "[%s] [%d] 开始探测 URL: %s", s.name, i, url)
-			var (
-				successSamples int
-				sumDelay       int64
-				lastErr        error
-				probeStart     = time.Now()
-				firstDelay     uint16
-				hasFirst       bool
-			)
-
-			expectedStatus, _ := utils.NewUnsignedRanges[uint16]("200,204")
-
-			for j := 0; j < latencySamples; j++ {
-				if ctx.Err() != nil {
-					lastErr = ctx.Err()
-					break
-				}
-				start := time.Now()
-				req, _ := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-				req.Header.Set("User-Agent", convert.RandUserAgent())
-				resp, err := s.client.Do(req)
-				if err != nil {
-					lastErr = err
-					debugf(s.option, "[%s] [%d-%d] 探测失败: %v", s.name, i, j, err)
-					break
-				}
-				resp.Body.Close()
-
-				if !expectedStatus.Check(uint16(resp.StatusCode)) {
-					lastErr = fmt.Errorf("status code: %d", resp.StatusCode)
-					debugf(s.option, "[%s] [%d-%d] 状态码错误: %d", s.name, i, j, resp.StatusCode)
-					break
-				}
-
-				delay := uint16(time.Since(start).Milliseconds())
-				debugf(s.option, "[%s] [%d-%d] 探测完成: %dms", s.name, i, j, delay)
-
-				if j == 0 {
-					firstDelay = delay
-					hasFirst = true
-				}
-
-				// If LatencySamples > 1, the first request establishes the connection (TCP/TLS handshake).
-				// We skip it from the average if we can successfully get more samples on the established link.
-				if latencySamples > 1 && j == 0 {
-					continue
-				}
-
-				successSamples++
-				sumDelay += int64(delay)
+			delay, err := s.requestDelay(ctx, url)
+			if err != nil {
+				debugf(s.option, "[%s] [%d] 探测失败: %v", s.name, i, err)
+				results <- urlResult{url: url, err: err, ok: false}
+				return
 			}
 
-			// Robustness fallback: if first request worked but avg samples failed (e.g. timeout during 2nd req),
-			// use the first request as result instead of marking dead.
-			if successSamples == 0 && hasFirst {
-				successSamples = 1
-				sumDelay = int64(firstDelay)
-			}
-
-			if successSamples > 0 {
-				avg := uint16(sumDelay / int64(successSamples))
-				results <- urlResult{
-					url:      url,
-					delay:    avg,
-					duration: time.Since(probeStart),
-					ok:       true,
-				}
-			} else {
-				results <- urlResult{
-					url: url,
-					err: lastErr,
-					ok:  false,
-				}
-			}
+			debugf(s.option, "[%s] [%d] 探测完成: %dms", s.name, i, delay)
+			results <- urlResult{url: url, delay: delay, ok: true}
 		}(i)
 	}
 
@@ -357,59 +323,83 @@ loop:
 	var (
 		successCount int
 		minDelay     = uint16(0xFFFF)
-		delays       []uint16
 		lastErr      error
 	)
 
 	for r := range results {
 		if r.ok {
 			successCount++
-			delays = append(delays, r.delay)
 			if r.delay < minDelay {
 				minDelay = r.delay
 			}
-		} else {
-			lastErr = r.err
+			continue
 		}
+		lastErr = r.err
 	}
 
-	if successCount == 0 {
-		// Last-ditch effort: If all parallel probes failed (perhaps due to concurrency noise),
-		// try one sequential probe to confirm "Dead" status.
-		debugf(s.option, "[%s] 并行探测全部失败, 尝试串行补偿探测: %s", s.name, url)
-		expectedStatus, _ := utils.NewUnsignedRanges[uint16]("200,204")
-		start := time.Now()
-		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-		req.Header.Set("User-Agent", convert.RandUserAgent())
-		resp, err := s.client.Do(req)
-		if err == nil {
-			resp.Body.Close()
-			if expectedStatus.Check(uint16(resp.StatusCode)) {
-				delay := uint16(time.Since(start).Milliseconds())
-				debugf(s.option, "[%s] 补偿探测成功: %dms", s.name, delay)
-				return latencyStats{
-					min:      delay,
-					p50:      delay,
-					p90:      delay,
-					p95:      delay,
-					lossRate: 0.0,
-				}, nil
-			}
-			debugf(s.option, "[%s] 补偿探测状态码错误: %d", s.name, resp.StatusCode)
-		} else {
-			debugf(s.option, "[%s] 补偿探测失败: %v", s.name, err)
+	if successCount > 0 {
+		return minDelay, nil
+	}
+
+	debugf(s.option, "[%s] 并行探测全部失败, 尝试串行补偿探测: %s", s.name, url)
+	delay, err := s.requestDelay(ctx, url)
+	if err == nil {
+		debugf(s.option, "[%s] 补偿探测成功: %dms", s.name, delay)
+		return delay, nil
+	}
+	debugf(s.option, "[%s] 补偿探测失败: %v", s.name, err)
+	if lastErr == nil {
+		lastErr = err
+	}
+
+	return 0, lastErr
+}
+
+func (s *proxyTest) measureLatencyMetrics(ctx context.Context, url string) latencyStats {
+	latencySamples := s.option.LatencySamples
+	if latencySamples <= 0 {
+		latencySamples = 3
+	}
+
+	delays := make([]uint16, 0, latencySamples)
+	failedSamples := 0
+
+	for i := 0; i < latencySamples; i++ {
+		if ctx.Err() != nil {
+			failedSamples += latencySamples - i
+			break
 		}
-		return latencyStats{lossRate: 1.0}, lastErr
+
+		delay, err := s.requestDelay(ctx, url)
+		if err != nil {
+			failedSamples++
+			debugf(s.option, "[%s] [metrics-%d] 探测失败: %v", s.name, i, err)
+			continue
+		}
+
+		debugf(s.option, "[%s] [metrics-%d] 探测完成: %dms", s.name, i, delay)
+		delays = append(delays, delay)
+	}
+
+	stats := latencyStats{
+		lossRate: float64(failedSamples) / float64(latencySamples),
+	}
+	if len(delays) == 0 {
+		return stats
 	}
 
 	sort.Slice(delays, func(i, j int) bool { return delays[i] < delays[j] })
+	stats.min = delays[0]
 
-	// Calculate Jitter (Average deviation from mean)
+	if len(delays) < 2 {
+		return stats
+	}
+
 	var sumDelay uint32
 	for _, d := range delays {
 		sumDelay += uint32(d)
 	}
-	avgDelay := float64(sumDelay) / float64(successCount)
+	avgDelay := float64(sumDelay) / float64(len(delays))
 
 	var sumDev float64
 	for _, d := range delays {
@@ -419,19 +409,34 @@ loop:
 		}
 		sumDev += dev
 	}
-	jitter := uint16(sumDev / float64(successCount))
-	lossRate := 1.0 - (float64(successCount) / float64(tryCount))
 
-	debugf(s.option, "[%s] 探测结果汇总: Delay=%d, Jitter=%d, LossRate=%.2f", s.name, minDelay, jitter, lossRate)
+	stats.p50 = percentileDelay(delays, 0.50)
+	stats.p90 = percentileDelay(delays, 0.90)
+	stats.p95 = percentileDelay(delays, 0.95)
+	stats.jitter = uint16(sumDev / float64(len(delays)))
 
-	return latencyStats{
-		min:      minDelay,
-		p50:      percentileDelay(delays, 0.50),
-		p90:      percentileDelay(delays, 0.90),
-		p95:      percentileDelay(delays, 0.95),
-		jitter:   jitter,
-		lossRate: lossRate,
-	}, nil
+	return stats
+}
+
+func (s *proxyTest) testURL(ctx context.Context, url string, tryCount int) (latencyStats, error) {
+	warmupDelay, err := s.probeURLMinDelay(ctx, url, tryCount)
+	if err != nil {
+		return latencyStats{}, err
+	}
+
+	if !s.option.EnableLatencyMetrics {
+		return latencyStats{min: warmupDelay}, nil
+	}
+
+	metrics := s.measureLatencyMetrics(ctx, url)
+	if metrics.min == 0 || warmupDelay < metrics.min {
+		metrics.min = warmupDelay
+	}
+
+	debugf(s.option, "[%s] 延迟指标汇总: Delay=%d, P50=%d, P90=%d, P95=%d, Jitter=%d, LossRate=%.2f",
+		s.name, metrics.min, metrics.p50, metrics.p90, metrics.p95, metrics.jitter, metrics.lossRate)
+
+	return metrics, nil
 }
 
 func percentileDelay(sorted []uint16, percentile float64) uint16 {
@@ -469,11 +474,11 @@ func (s *proxyTest) testURLAvailable(ctx context.Context, urls []string) map[str
 	for _, url := range urls {
 		go func(url string) {
 			defer wg.Done()
-			stats, okErr := s.testURL(ctx, url, 3)
+			delay, okErr := s.probeURLMinDelay(ctx, url, 3)
 			results <- &urlResult{
 				url:   url,
-				delay: stats.min,
-				ok:    okErr == nil && stats.min > 0,
+				delay: delay,
+				ok:    okErr == nil && delay > 0,
 			}
 		}(url)
 	}
@@ -498,7 +503,6 @@ func (s *proxyTest) Test(ctx context.Context) *models.Result {
 		URLForTest = option.URLForTest
 	)
 
-	// 优先测试延迟和丢包率，实现快速失败，避免坏节点占满完整测速超时。
 	probeCtx := ctx
 	var cancel context.CancelFunc
 	if option.ProbeTimeout > 0 {
@@ -506,8 +510,8 @@ func (s *proxyTest) Test(ctx context.Context) *models.Result {
 		defer cancel()
 	}
 	delayStats := s.testDelay(probeCtx)
-	if delayStats.min == 0 || delayStats.lossRate >= 1.0 {
-		debugf(s.option, "[%s] 节点不可用 (Delay: %v, Loss: %.2f), 跳过后续测试", name, delayStats.min, delayStats.lossRate)
+	if delayStats.min == 0 {
+		debugf(s.option, "[%s] 节点不可用 (Delay: %v), 跳过后续测试", name, delayStats.min)
 		return &models.Result{
 			Name:         name,
 			Delay:        delayStats.min,
@@ -532,7 +536,6 @@ func (s *proxyTest) Test(ctx context.Context) *models.Result {
 		wg            sync.WaitGroup
 	)
 
-	// 1. 带宽测试
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -542,7 +545,6 @@ func (s *proxyTest) Test(ctx context.Context) *models.Result {
 		mu.Unlock()
 	}()
 
-	// 2. 国家/地区检查
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -554,7 +556,6 @@ func (s *proxyTest) Test(ctx context.Context) *models.Result {
 		mu.Unlock()
 	}()
 
-	// 3. 其它类型检查 (Netflix, Disney+ etc.)
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -564,7 +565,6 @@ func (s *proxyTest) Test(ctx context.Context) *models.Result {
 		mu.Unlock()
 	}()
 
-	// 4. URL 可用性检查
 	if URLForTest != nil {
 		wg.Add(1)
 		go func() {
@@ -576,7 +576,6 @@ func (s *proxyTest) Test(ctx context.Context) *models.Result {
 		}()
 	}
 
-	// 等待所有异步测试完成 (遵守 ctx 超时)
 	done := make(chan struct{})
 	go func() {
 		wg.Wait()
@@ -585,11 +584,9 @@ func (s *proxyTest) Test(ctx context.Context) *models.Result {
 
 	select {
 	case <-done:
-		// 正常完成
 	case <-ctx.Done():
-		// 超时或取消，尽量保留已测得的部分数据
 		debugf(s.option, "[%s] 测试流程超时或取消", name)
-		<-done // 等待子协程清理并更新变量
+		<-done
 	}
 
 	if bandwidthErr != nil {
@@ -623,12 +620,12 @@ func (s *proxyTest) Test(ctx context.Context) *models.Result {
 	}
 }
 
-func TestProxy(ctx context.Context, name string, proxy C.Proxy, option *models.Options) *models.Result {
+func TestProxy(ctx context.Context, name string, proxy C.Proxy, option *models.Options, limiter *models.BandwidthLimiter) *models.Result {
 	timeout := option.Timeout
 	proxyCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	p := newProxyTest(name, proxy, option)
+	p := newProxyTest(name, proxy, option, limiter)
 	return p.Test(proxyCtx)
 }
 

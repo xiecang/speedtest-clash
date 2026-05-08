@@ -40,9 +40,6 @@ func errorf(options *models.Options, format string, args ...any) {
 }
 
 func normalizeOptions(options *models.Options) (bool, string) {
-	if options.ConfigPath == "" && len(options.Proxies) == 0 && !options.KeepOpen {
-		return false, "配置不能为空，请至少提供 ConfigPath 或 Proxies"
-	}
 	options.Logger = resolveLogger(options.Logger)
 	if options.DownloadSize == 0 {
 		options.DownloadSize = 100 * 1024 * 1024
@@ -67,6 +64,9 @@ func normalizeOptions(options *models.Options) (bool, string) {
 	}
 	if options.DelayTestUrl == "" {
 		options.DelayTestUrl = "https://i.ytimg.com/generate_204"
+	}
+	if options.EnableLatencyMetrics && options.LatencySamples <= 0 {
+		options.LatencySamples = 3
 	}
 	if options.Progress.ProgressInterval <= 0 {
 		options.Progress.ProgressInterval = 3 * time.Second

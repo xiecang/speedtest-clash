@@ -39,34 +39,31 @@ type ProgressConfig struct {
 }
 
 type Options struct {
-	LivenessAddr            string           `json:"liveness_addr"`               // 测速时调用的地址，可下载的任意地址
-	DownloadSize            int              `json:"download_size"`               // 测速时下载的文件大小，单位为 bit，默认下载10M
-	Timeout                 time.Duration    `json:"timeout"`                     // 每个代理测速的超时时间
-	ConfigPath              string           `json:"config_path"`                 // 配置文件地址，可以为 URL 或者本地路径，多个使用 | 分隔
-	NameRegexContain        string           `json:"name_regex_contain"`          // 通过名字过滤代理，只测试过滤部分，格式为正则，默认全部测
-	NameRegexNonContain     string           `json:"name_regex_not_contain"`      // 通过名字过滤代理，跳过过滤部分，格式为正则
-	SortField               SortField        `json:"sort_field"`                  // 排序方式，b 带宽 t 延迟
-	URLForTest              []string         `json:"url_for_test"`                // 测试 URL 是否可访问
-	ProxyUrl                string           `json:"proxy_url"`                   // ConfigPath 为网络链接时可使用指定代理下载
-	CheckTypes              []CheckType      `json:"check_types"`                 // 检查节点可解锁的类型, 可用值请参考 CheckType
-	Concurrent              int              `json:"concurrent"`                  // 测速的并发数，默认 CPU 数量
-	BandwidthConcurrency    int              `json:"bandwidth_concurrency"`       // 带宽测速并发数
-	DisableBandwidthTest    bool             `json:"disable_bandwidth_test"`      // 禁用带宽下载测速，仅保留探活/延迟/URL/解锁检查
-	MaxBandwidthBytesPerSec int64            `json:"max_bandwidth_bytes_per_sec"` // Test 级下载速率上限，<=0 表示不限制
-	LatencySamples          int              `json:"latency_samples"`             // 建立连接后的延迟测试次数
-	ProbeTimeout            time.Duration    `json:"probe_timeout"`               // 探活超时，用于快速淘汰失效节点
-	DelayTestUrl            string           `json:"delay_test_url"`              // 延迟测试 URL
-	Logger                  *slog.Logger     `json:"-"`                           // 日志输出，nil 时回退到 slog.Default()
-	Cache                   Cache            `json:"-"`                           // 缓存实现，不序列化
-	Proxies                 []map[string]any `json:"-"`                           // 支持传入 proxy 配置来测速
-	Progress                ProgressConfig   `json:"progress"`                    // 进度配置
-	ForceCertVerify         bool             `json:"force_cert_verify"`           // 若为 true，有 skip-cert-verify 字段的节点强制设置为 false（强制验证证书）
-	OnResult                OnResultCallback `json:"-"`                           // 单节点测速完成回调（实时），不序列化
-	OnResultTimeout         time.Duration    `json:"on_result_timeout"`           // 回调超时，0=默认10s，负数=不限超时（继承父ctx）
-	// KeepOpen prevents TestSpeedStream from closing the proxy channel after
-	// the initial config/proxies are loaded.  When true the caller is
-	// responsible for calling CloseProxies() when it is done feeding nodes.
-	KeepOpen bool `json:"keep_open"`
+	LivenessAddr         string           `json:"liveness_addr"`            // 测速时调用的地址，可下载的任意地址
+	DownloadSize         int              `json:"download_size"`            // 测速时下载的文件大小，单位为 bit，默认下载10M
+	Timeout              time.Duration    `json:"timeout"`                  // 每个代理测速的超时时间
+	ConfigPath           string           `json:"config_path"`              // 配置文件地址，可以为 URL 或者本地路径，多个使用 | 分隔
+	NameRegexContain     string           `json:"name_regex_contain"`       // 通过名字过滤代理，只测试过滤部分，格式为正则，默认全部测
+	NameRegexNonContain  string           `json:"name_regex_not_contain"`   // 通过名字过滤代理，跳过过滤部分，格式为正则
+	SortField            SortField        `json:"sort_field"`               // 排序方式，b 带宽 t 延迟
+	URLForTest           []string         `json:"url_for_test"`             // 测试 URL 是否可访问
+	ProxyUrl             string           `json:"proxy_url"`                // ConfigPath 为网络链接时可使用指定代理下载
+	CheckTypes           []CheckType      `json:"check_types"`              // 检查节点可解锁的类型, 可用值请参考 CheckType
+	Concurrent           int              `json:"concurrent"`               // 测速的并发数，默认 CPU 数量
+	BandwidthConcurrency int              `json:"bandwidth_concurrency"`    // 带宽测速并发数
+	DisableBandwidthTest bool             `json:"disable_bandwidth_test"`   // 禁用带宽下载测速，仅保留探活/延迟/URL/解锁检查
+	MaxBandwidthMBPerSec float64          `json:"max_bandwidth_mb_per_sec"` // Test 级下载速率上限，单位 MB/s，<=0 表示不限制
+	EnableLatencyMetrics bool             `json:"enable_latency_metrics"`   // 是否采集延迟分布指标（P50/P90/P95/Jitter/LossRate）
+	LatencySamples       int              `json:"latency_samples"`          // 启用延迟分布指标后，预热请求后的真实延迟采样次数
+	ProbeTimeout         time.Duration    `json:"probe_timeout"`            // 探活超时，用于快速淘汰失效节点
+	DelayTestUrl         string           `json:"delay_test_url"`           // 延迟测试 URL
+	Logger               *slog.Logger     `json:"-"`                        // 日志输出，nil 时回退到 slog.Default()
+	Cache                Cache            `json:"-"`                        // 缓存实现，不序列化
+	Proxies              []map[string]any `json:"-"`                        // 支持传入 proxy 配置来测速
+	Progress             ProgressConfig   `json:"progress"`                 // 进度配置
+	ForceCertVerify      bool             `json:"force_cert_verify"`        // 若为 true，有 skip-cert-verify 字段的节点强制设置为 false（强制验证证书）
+	OnResult             OnResultCallback `json:"-"`                        // 单节点测速完成回调（实时），不序列化
+	OnResultTimeout      time.Duration    `json:"on_result_timeout"`        // 回调超时，0=默认10s，负数=不限超时（继承父ctx）
 }
 
 // bandwidthBurstBytes is the token-bucket burst size for BandwidthLimiter.

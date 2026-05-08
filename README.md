@@ -29,6 +29,9 @@ speedtest-clash -c config.yaml -f "香港|台湾"
 # 按延迟排序并导出结果
 speedtest-clash -c config.yaml -sort t -output result.csv
 
+# 显式开启延迟分布指标
+speedtest-clash -c config.yaml -enable-latency-metrics -latency-samples 5
+
 # 使用网络配置文件
 speedtest-clash -c "https://example.com/config.yaml"
 ```
@@ -46,6 +49,10 @@ Usage of speedtest-clash:
         节点名称过滤，支持正则表达式 (默认: ".*")
   -l string
         测速目标地址，支持自定义 URL (默认: "https://speed.cloudflare.com/__down?bytes=%d")
+  -enable-latency-metrics
+        显式采集 delay_p50/delay_p90/delay_p95/jitter/loss_rate
+  -latency-samples int
+        开启延迟分布指标后，预热请求后的真实延迟采样次数 (默认: 3)
   -output string
         结果输出文件，支持 csv/yaml 格式
   -size int
@@ -125,6 +132,8 @@ options := models.Options{
     LivenessAddr:        "https://speed.cloudflare.com/__down?bytes=%d",
     NameRegexContain:    "香港|台湾|新加坡",
     NameRegexNonContain: "测试|临时",
+    EnableLatencyMetrics: true,
+    LatencySamples:      5,
     URLForTest:          []string{"https://www.google.com", "https://www.youtube.com"},
     CheckTypes: []models.CheckType{
         models.CheckTypeGPTWeb,     // ChatGPT Web 端
