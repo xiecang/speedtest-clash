@@ -433,10 +433,6 @@ func (t *Test) RunStream(ctx context.Context) (<-chan *models.CProxyWithResult, 
 						} else {
 							atomic.AddInt32(t.invalidCount, 1)
 						}
-						// 实时回调（无论成功还是失败，均触发）
-						if result != nil {
-							t.fireOnResult(streamCtx, result)
-						}
 					}(proxy)
 				}
 			}
@@ -803,35 +799,4 @@ func (t *Test) Stop() {
 		cancel()
 	}
 	t.CloseInput()
-}
-
-// fireOnResult 安全地调用用户设置的 OnResult 回调。
-// - 在独立 goroutine 中运行，避免阻塞工作线程
-// - 超时由 options.OnResultTimeout 控制：0=默认10s，负数=不加独立超时（继承父ctx）
-// - recover 防止回调内部 panic 崩溃整个工作线程
-func (t *Test) fireOnResult(ctx context.Context, result *models.CProxyWithResult) {
-	cb := t.options.OnResult
-	if cb == nil {
-		return
-	}
-	go func() {
-		defer func() {
-			if r := recover(); r != nil {
-				errorf(t.options, "OnResult callback panic: %v", r)
-			}
-		}()
-
-		timeout := t.options.OnResultTimeout
-		if timeout < 0 {
-			// 不加独立超时，直接继承父 ctx
-			cb(ctx, result)
-			return
-		}
-		if timeout == 0 {
-			timeout = 10 * time.Second // 默认保底超时
-		}
-		cbCtx, cancel := context.WithTimeout(ctx, timeout)
-		defer cancel()
-		cb(cbCtx, result)
-	}()
 }
