@@ -626,6 +626,7 @@ func TestProxy(ctx context.Context, name string, proxy C.Proxy, option *models.O
 	defer cancel()
 
 	p := newProxyTest(name, proxy, option, limiter)
+	defer p.client.CloseIdleConnections()
 	return p.Test(proxyCtx)
 }
 
