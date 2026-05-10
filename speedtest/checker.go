@@ -36,7 +36,7 @@ func checkProxy(ctx context.Context, proxy C.Proxy, types []models.CheckType, lo
 				defer wg.Done()
 				r, err := f.Check(ctx, proxy)
 				if err != nil {
-					logger.Info("proxy check failed",
+					logger.Debug("proxy check failed",
 						slog.String("proxy_name", proxy.Name()),
 						slog.String("proxy_addr", proxy.Addr()),
 						slog.String("check_type", string(checkType)),

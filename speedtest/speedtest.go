@@ -291,7 +291,7 @@ func (t *Test) AddProxyURLs(ctx context.Context, sources []string) error {
 		return err
 	}
 	loader := &ProxySourceLoader{ProxyURL: t.proxyUrl, Options: t.options}
-	return loader.LoadManyStream(ctx, sources, func(proxies []map[string]any) error {
+	return loader.LoadManyStreamBatched(ctx, sources, t.options.SourceBatchSize, func(proxies []map[string]any) error {
 		return t.AddProxies(ctx, proxies)
 	})
 }

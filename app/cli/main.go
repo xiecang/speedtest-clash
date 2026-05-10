@@ -51,6 +51,7 @@ func main() {
 		LatencySamples:       *latencySamples,
 		DelayTestUrl:         *delayUrl,
 		Progress:             models.ProgressConfig{PrintProgress: true},
+		SourceConcurrency:    3,
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

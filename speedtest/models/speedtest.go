@@ -49,6 +49,8 @@ type Options struct {
 	BandwidthConcurrency int              `json:"bandwidth_concurrency"`    // 带宽测速并发数
 	DisableBandwidthTest bool             `json:"disable_bandwidth_test"`   // 禁用带宽下载测速，仅保留探活/延迟/URL/解锁检查
 	MaxBandwidthMBPerSec float64          `json:"max_bandwidth_mb_per_sec"` // Test 级下载速率上限，单位 MB/s，<=0 表示不限制
+	SourceConcurrency    int              `json:"source_concurrency"`       // 配置源加载并发，默认 1，避免多个大订阅同时驻留内存
+	SourceBatchSize      int              `json:"source_batch_size"`        // 配置源加载后回调批大小，默认 200
 	EnableLatencyMetrics bool             `json:"enable_latency_metrics"`   // 是否采集延迟分布指标（P50/P90/P95/Jitter/LossRate）
 	LatencySamples       int              `json:"latency_samples"`          // 启用延迟分布指标后，预热请求后的真实延迟采样次数
 	ProbeTimeout         time.Duration    `json:"probe_timeout"`            // 探活超时，用于快速淘汰失效节点

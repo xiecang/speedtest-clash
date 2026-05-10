@@ -24,6 +24,10 @@ type ProxySourceLoader struct {
 	Options  *models.Options
 }
 
+type ProxyBatchHandler func([]map[string]any) error
+
+const defaultSourceBatchSize = 200
+
 func (l *ProxySourceLoader) LoadMany(ctx context.Context, sources []string) ([]map[string]any, error) {
 	var out []map[string]any
 	for _, source := range sources {
@@ -42,10 +46,16 @@ func (l *ProxySourceLoader) LoadMany(ctx context.Context, sources []string) ([]m
 	return out, nil
 }
 
-// LoadManyStream concurrently loads all sources and calls fn with each batch of proxies
-// as soon as a source finishes, without waiting for the others.
+// LoadManyStream loads sources and calls fn as proxy batches become available.
 // Sources that fail are skipped (error is logged); fn errors abort immediately.
 func (l *ProxySourceLoader) LoadManyStream(ctx context.Context, sources []string, fn func([]map[string]any) error) error {
+	return l.LoadManyStreamBatched(ctx, sources, l.sourceBatchSize(), fn)
+}
+
+func (l *ProxySourceLoader) LoadManyStreamBatched(ctx context.Context, sources []string, batchSize int, fn ProxyBatchHandler) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
 	var parts []string
 	for _, source := range sources {
 		for _, part := range strings.Split(source, "|") {
@@ -59,41 +69,81 @@ func (l *ProxySourceLoader) LoadManyStream(ctx context.Context, sources []string
 		return nil
 	}
 
-	type result struct {
-		proxies []map[string]any
-		err     error
+	concurrency := l.sourceConcurrency()
+	if concurrency > len(parts) {
+		concurrency = len(parts)
 	}
-	resultCh := make(chan result, len(parts))
+	partsCh := make(chan string)
+	errCh := make(chan error, 1)
+	var callbackMu sync.Mutex
+	var callbackErr error
+	callback := func(batch []map[string]any) error {
+		callbackMu.Lock()
+		defer callbackMu.Unlock()
+		if callbackErr != nil {
+			return callbackErr
+		}
+		if err := fn(batch); err != nil {
+			callbackErr = err
+			cancel()
+			select {
+			case errCh <- err:
+			default:
+			}
+			return err
+		}
+		return nil
+	}
 
 	var wg sync.WaitGroup
-	for _, part := range parts {
+	for i := 0; i < concurrency; i++ {
 		wg.Add(1)
-		go func(p string) {
+		go func() {
 			defer wg.Done()
-			proxies, err := l.Load(ctx, p)
-			select {
-			case resultCh <- result{proxies, err}:
-			case <-ctx.Done():
+			for part := range partsCh {
+				if err := l.LoadStream(ctx, part, batchSize, callback); err != nil {
+					callbackMu.Lock()
+					aborted := callbackErr != nil
+					callbackMu.Unlock()
+					if aborted || ctx.Err() != nil {
+						return
+					}
+					warnf(l.Options, "load source error (skipped): %s", err)
+				}
 			}
-		}(part)
+		}()
 	}
+
+	go func() {
+		defer close(partsCh)
+		for _, part := range parts {
+			select {
+			case <-ctx.Done():
+				return
+			case partsCh <- part:
+			}
+		}
+	}()
 	go func() {
 		wg.Wait()
-		close(resultCh)
+		close(errCh)
 	}()
 
-	for r := range resultCh {
-		if r.err != nil {
-			warnf(l.Options, "load source error (skipped): %s", r.err)
-			continue
+	select {
+	case <-ctx.Done():
+		callbackMu.Lock()
+		err := callbackErr
+		callbackMu.Unlock()
+		if err != nil {
+			return err
 		}
-		if len(r.proxies) > 0 {
-			if err := fn(r.proxies); err != nil {
-				return err
-			}
+		return ctx.Err()
+	case err, ok := <-errCh:
+		if !ok {
+			return nil
 		}
+		return err
 	}
-	return nil
 }
 
 func (l *ProxySourceLoader) Load(ctx context.Context, source string) ([]map[string]any, error) {
@@ -102,6 +152,14 @@ func (l *ProxySourceLoader) Load(ctx context.Context, source string) ([]map[stri
 		return nil, err
 	}
 	return l.parse(ctx, body)
+}
+
+func (l *ProxySourceLoader) LoadStream(ctx context.Context, source string, batchSize int, fn ProxyBatchHandler) error {
+	body, err := l.readSource(ctx, source)
+	if err != nil {
+		return err
+	}
+	return l.parseStream(ctx, body, batchSize, fn)
 }
 
 func (l *ProxySourceLoader) readSource(ctx context.Context, source string) ([]byte, error) {
@@ -134,34 +192,108 @@ func (l *ProxySourceLoader) readSource(ctx context.Context, source string) ([]by
 }
 
 func (l *ProxySourceLoader) parse(ctx context.Context, body []byte) ([]map[string]any, error) {
+	var out []map[string]any
+	err := l.parseStream(ctx, body, l.sourceBatchSize(), func(batch []map[string]any) error {
+		out = append(out, batch...)
+		return nil
+	})
+	return out, err
+}
+
+func (l *ProxySourceLoader) parseStream(ctx context.Context, body []byte, batchSize int, fn ProxyBatchHandler) error {
 	rawCfg := &models.RawConfig{
 		Proxies: []map[string]any{},
 	}
+	emit := newProxyBatchEmitter(batchSize, fn)
 	if !bytes.Contains(body, []byte("server")) {
 		if bytes.Contains(body, []byte("://")) {
 			body = []byte(base64.StdEncoding.EncodeToString(body))
 		}
 		proxyList, err := convert.ConvertsV2Ray(body)
 		if err != nil {
-			return nil, fmt.Errorf("convert proxies: %w", err)
+			return fmt.Errorf("convert proxies: %w", err)
 		}
-		return proxyList, nil
+		for _, proxy := range proxyList {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			if err := emit.Add(proxy); err != nil {
+				return err
+			}
+		}
+		return emit.Flush()
 	}
 	if err := yaml.Unmarshal(body, rawCfg); err != nil {
-		return nil, fmt.Errorf("parse config: %w", err)
+		return fmt.Errorf("parse config: %w", err)
 	}
 
-	out := append([]map[string]any(nil), rawCfg.Proxies...)
+	for _, proxy := range rawCfg.Proxies {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := emit.Add(proxy); err != nil {
+			return err
+		}
+	}
+	if err := emit.Flush(); err != nil {
+		return err
+	}
 	for name, config := range rawCfg.Providers {
 		if name == provider.ReservedName {
 			warnf(l.Options, "can not defined a provider called `%s`", provider.ReservedName)
 			continue
 		}
-		proxies, err := l.Load(ctx, config.Url)
-		if err != nil {
-			return out, err
+		if err := l.LoadStream(ctx, config.Url, batchSize, fn); err != nil {
+			return err
 		}
-		out = append(out, proxies...)
 	}
-	return out, nil
+	return nil
+}
+
+func (l *ProxySourceLoader) sourceConcurrency() int {
+	if l.Options != nil && l.Options.SourceConcurrency > 0 {
+		return l.Options.SourceConcurrency
+	}
+	return 1
+}
+
+func (l *ProxySourceLoader) sourceBatchSize() int {
+	if l.Options != nil && l.Options.SourceBatchSize > 0 {
+		return l.Options.SourceBatchSize
+	}
+	return defaultSourceBatchSize
+}
+
+type proxyBatchEmitter struct {
+	batchSize int
+	fn        ProxyBatchHandler
+	batch     []map[string]any
+}
+
+func newProxyBatchEmitter(batchSize int, fn ProxyBatchHandler) *proxyBatchEmitter {
+	if batchSize <= 0 {
+		batchSize = defaultSourceBatchSize
+	}
+	return &proxyBatchEmitter{
+		batchSize: batchSize,
+		fn:        fn,
+		batch:     make([]map[string]any, 0, batchSize),
+	}
+}
+
+func (e *proxyBatchEmitter) Add(proxy map[string]any) error {
+	e.batch = append(e.batch, proxy)
+	if len(e.batch) < e.batchSize {
+		return nil
+	}
+	return e.Flush()
+}
+
+func (e *proxyBatchEmitter) Flush() error {
+	if len(e.batch) == 0 {
+		return nil
+	}
+	batch := e.batch
+	e.batch = make([]map[string]any, 0, e.batchSize)
+	return e.fn(batch)
 }
