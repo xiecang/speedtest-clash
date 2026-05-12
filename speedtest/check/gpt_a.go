@@ -18,11 +18,10 @@ const (
 
 func requestChatGPT(ctx context.Context, client *http.Client, url string) (bool, error) {
 	resp, err := requests.Request(ctx, &requests.RequestOption{
-		Method: http.MethodPost,
+		Method: http.MethodGet,
 		URL:    url,
 		Headers: map[string]string{
-			"Content-Type": "application/json",
-			"User-Agent":   convert.RandUserAgent(),
+			"User-Agent": convert.RandUserAgent(),
 		},
 		Timeout:      timeout,
 		RetryTimes:   1,

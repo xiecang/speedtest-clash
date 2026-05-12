@@ -10,7 +10,19 @@ import (
 	"strings"
 )
 
-// https://github.com/clash-verge-rev/clash-verge-rev/blob/c894a15d13d5bcce518f8412cc393b56272a9afa/src-tauri/src/cmd/media_unlock_checker.rs#L241
+const geminiRegionMarker = `,2,1,200,"`
+
+var geminiBlockedRegions = map[string]struct{}{
+	"CHN": {},
+	"RUS": {},
+	"BLR": {},
+	"CUB": {},
+	"IRN": {},
+	"PRK": {},
+	"SYR": {},
+	"HKG": {},
+	"MAC": {},
+}
 
 type geminiChecker struct {
 	tp models.CheckType
@@ -38,8 +50,35 @@ func (g geminiChecker) Check(ctx context.Context, proxy C.Proxy) (result models.
 	if err != nil {
 		return models.NewCheckResult(g.tp, false, ""), err
 	}
-	if strings.Contains(string(resp.Body), "45631641,null,true") {
-		return models.NewCheckResult(g.tp, true, ""), nil
+	region, ok := parseGeminiRegion(string(resp.Body))
+	if !ok {
+		return models.NewCheckResult(g.tp, false, ""), nil
 	}
-	return models.NewCheckResult(g.tp, false, ""), err
+	return models.NewCheckResult(g.tp, isGeminiRegionAllowed(region), region), nil
+}
+
+func parseGeminiRegion(body string) (string, bool) {
+	idx := strings.Index(body, geminiRegionMarker)
+	if idx < 0 {
+		return "", false
+	}
+	start := idx + len(geminiRegionMarker)
+	if len(body) < start+3 {
+		return "", false
+	}
+	code := body[start : start+3]
+	for _, b := range []byte(code) {
+		if b < 'A' || b > 'Z' {
+			return "", false
+		}
+	}
+	return code, true
+}
+
+func isGeminiRegionAllowed(region string) bool {
+	if region == "" {
+		return false
+	}
+	_, blocked := geminiBlockedRegions[region]
+	return !blocked
 }

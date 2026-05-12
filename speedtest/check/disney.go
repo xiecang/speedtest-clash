@@ -4,11 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"regexp"
+	"strings"
+	"time"
+
 	C "github.com/metacubex/mihomo/constant"
 	"github.com/xiecang/speedtest-clash/speedtest/models"
 	"github.com/xiecang/speedtest-clash/speedtest/requests"
-	"net/http"
-	"strings"
 )
 
 const (
@@ -28,7 +31,7 @@ func NewDisneyChecker() models.Checker {
 }
 
 func (d *disneyChecker) Check(ctx context.Context, proxy C.Proxy) (result models.CheckResult, err error) {
-	client := requests.GetClient(proxy, timeout)
+	client := requests.GetClient(proxy, 30*time.Second)
 	var errRes = models.NewCheckResult(d.tp, false, "")
 
 	// 第一步：获取 assertion token
@@ -38,17 +41,20 @@ func (d *disneyChecker) Check(ctx context.Context, proxy C.Proxy) (result models
 	}
 
 	// 第二步：获取 access token
-	refreshToken, err := d.getAccessToken(ctx, client, assertionToken)
+	refreshToken, forbidden, err := d.getAccessToken(ctx, client, assertionToken)
 	if err != nil {
 		return errRes, err
+	}
+	if forbidden || refreshToken == "" {
+		return errRes, nil
 	}
 
 	// 第三步：检查区域
-	inSupportedLocation, err := d.checkRegion(ctx, client, refreshToken)
+	inSupportedLocation, region, err := d.checkRegion(ctx, client, refreshToken)
 	if err != nil {
 		return errRes, err
 	}
-	return models.NewCheckResult(d.tp, inSupportedLocation, ""), nil
+	return models.NewCheckResult(d.tp, inSupportedLocation, region), nil
 }
 
 func (d *disneyChecker) getAssertionToken(ctx context.Context, client *http.Client) (string, error) {
@@ -56,7 +62,7 @@ func (d *disneyChecker) getAssertionToken(ctx context.Context, client *http.Clie
 		Method:       http.MethodPost,
 		URL:          "https://disney.api.edge.bamgrid.com/devices",
 		Body:         []byte(assertion),
-		Timeout:      timeout,
+		Timeout:      30 * time.Second,
 		RetryTimes:   retryTimes,
 		RetryTimeOut: retryTimeOut,
 		Client:       client,
@@ -81,13 +87,13 @@ func (d *disneyChecker) getAssertionToken(ctx context.Context, client *http.Clie
 	return assertionToken, nil
 }
 
-func (d *disneyChecker) getAccessToken(ctx context.Context, client *http.Client, assertionToken string) (string, error) {
+func (d *disneyChecker) getAccessToken(ctx context.Context, client *http.Client, assertionToken string) (string, bool, error) {
 	tokenData := strings.Replace(cookie, "DISNEYASSERTION", assertionToken, 1)
 	resp, err := requests.Request(ctx, &requests.RequestOption{
 		Method:       http.MethodPost,
 		URL:          "https://disney.api.edge.bamgrid.com/token",
 		Body:         []byte(tokenData),
-		Timeout:      timeout,
+		Timeout:      30 * time.Second,
 		RetryTimes:   retryTimes,
 		RetryTimeOut: retryTimeOut,
 		Client:       client,
@@ -98,64 +104,125 @@ func (d *disneyChecker) getAccessToken(ctx context.Context, client *http.Client,
 		},
 	})
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 
-	var tokenResp map[string]interface{}
-	if err := json.Unmarshal(resp.Body, &tokenResp); err != nil {
-		return "", err
-	}
-
-	if errDesc, ok := tokenResp["error_description"].(string); ok && errDesc == "forbidden-location" {
-		return "", nil
-	}
-
-	refreshToken, ok := tokenResp["refresh_token"].(string)
-	if !ok {
-		return "", nil
-	}
-	return refreshToken, nil
+	refreshToken, forbidden, _ := parseDisneyTokenResponse(resp.Body)
+	return refreshToken, forbidden, nil
 }
 
-func (d *disneyChecker) checkRegion(ctx context.Context, client *http.Client, refreshToken string) (bool, error) {
+func (d *disneyChecker) checkRegion(ctx context.Context, client *http.Client, refreshToken string) (bool, string, error) {
 	gqlQuery := fmt.Sprintf(`{"query":"mutation refreshToken($input: RefreshTokenInput!) {refreshToken(refreshToken: $input) {activeSession {sessionId}}}","variables":{"input":{"refreshToken":"%s"}}}`, refreshToken)
 	resp, err := requests.Request(ctx, &requests.RequestOption{
 		Method:       http.MethodPost,
 		URL:          "https://disney.api.edge.bamgrid.com/graph/v1/device/graphql",
 		Body:         []byte(gqlQuery),
-		Timeout:      timeout,
+		Timeout:      30 * time.Second,
 		RetryTimes:   1,
 		RetryTimeOut: retryTimeOut,
 		Client:       client,
 		Headers: map[string]string{
 			"User-Agent":    userAgent,
 			"Authorization": authBear,
+			"Content-Type":  "application/json",
 		},
 	})
 	if err != nil {
-		return false, err
+		return false, "", err
 	}
-	var gqlResp map[string]interface{}
-	if err := json.Unmarshal(resp.Body, &gqlResp); err != nil {
-		return false, err
-	}
-
-	// 检查区域信息
-	extensions, ok := gqlResp["extensions"].(map[string]interface{})
-	if !ok {
-		return false, err
-	}
-
-	sdk, ok := extensions["sdk"].(map[string]interface{})
-	if !ok {
-		return false, err
+	region, inSupportedLocation, ok := parseDisneyGraphQLRegion(resp.Body)
+	if ok {
+		if region == "JP" {
+			return true, region, nil
+		}
+		if d.disneyPreviewUnavailable(ctx, client) {
+			return false, "", nil
+		}
+		return inSupportedLocation, region, nil
 	}
 
-	session, ok := sdk["session"].(map[string]interface{})
-	if !ok {
-		return false, err
+	if region, ok := d.regionFromMainPage(ctx, client); ok {
+		return true, region, nil
+	}
+	return false, "", nil
+}
+
+func (d *disneyChecker) disneyPreviewUnavailable(ctx context.Context, client *http.Client) bool {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://disneyplus.com", nil)
+	if err != nil {
+		return true
+	}
+	req.Header.Set("User-Agent", userAgent)
+	resp, err := client.Do(req)
+	if err != nil {
+		return true
+	}
+	defer resp.Body.Close()
+	return isDisneyPreviewUnavailableURL(resp.Request.URL.String())
+}
+
+func (d *disneyChecker) regionFromMainPage(ctx context.Context, client *http.Client) (string, bool) {
+	resp, err := requests.Request(ctx, &requests.RequestOption{
+		Method:       http.MethodGet,
+		URL:          "https://www.disneyplus.com/",
+		Timeout:      30 * time.Second,
+		RetryTimes:   retryTimes,
+		RetryTimeOut: retryTimeOut,
+		Client:       client,
+		Headers: map[string]string{
+			"User-Agent": userAgent,
+		},
+	})
+	if err != nil {
+		return "", false
+	}
+	return parseDisneyMainPageRegion(resp.Body)
+}
+
+func parseDisneyTokenResponse(body []byte) (refreshToken string, forbidden bool, found bool) {
+	bodyStr := strings.ToLower(string(body))
+	if strings.Contains(bodyStr, "forbidden-location") || strings.Contains(bodyStr, "403 error") {
+		return "", true, false
 	}
 
-	inSupportedLocation, _ := session["inSupportedLocation"].(bool)
-	return inSupportedLocation, nil
+	var tokenResp map[string]interface{}
+	if err := json.Unmarshal(body, &tokenResp); err == nil {
+		if refreshToken, ok := tokenResp["refresh_token"].(string); ok && refreshToken != "" {
+			return refreshToken, false, true
+		}
+	}
+
+	re := regexp.MustCompile(`"refresh_token"\s*:\s*"([^"]+)"`)
+	if match := re.FindSubmatch(body); len(match) == 2 {
+		return string(match[1]), false, true
+	}
+	return "", false, false
+}
+
+func parseDisneyGraphQLRegion(body []byte) (region string, inSupportedLocation bool, ok bool) {
+	regionRe := regexp.MustCompile(`"countryCode"\s*:\s*"([^"]+)"`)
+	regionMatch := regionRe.FindSubmatch(body)
+	if len(regionMatch) != 2 {
+		return "", false, false
+	}
+
+	supportedRe := regexp.MustCompile(`"inSupportedLocation"\s*:\s*(false|true)`)
+	supportedMatch := supportedRe.FindSubmatch(body)
+	if len(supportedMatch) != 2 {
+		return string(regionMatch[1]), false, false
+	}
+	return string(regionMatch[1]), string(supportedMatch[1]) == "true", true
+}
+
+func parseDisneyMainPageRegion(body []byte) (string, bool) {
+	re := regexp.MustCompile(`"region"\s*:\s*"([^"]+)"`)
+	match := re.FindSubmatch(body)
+	if len(match) != 2 {
+		return "", false
+	}
+	return string(match[1]), true
+}
+
+func isDisneyPreviewUnavailableURL(url string) bool {
+	return strings.Contains(url, "preview") || strings.Contains(url, "unavailable")
 }
