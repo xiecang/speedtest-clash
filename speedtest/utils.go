@@ -34,38 +34,40 @@ func testspeed(ctx context.Context, proxy models.CProxy, options *models.Options
 		}
 	}
 
-	var (
-		tp  = proxy.Type()
-		err error
-	)
-	switch tp {
-	case C.Shadowsocks, C.ShadowsocksR, C.Snell, C.Socks5, C.Http, C.Vmess, C.Vless, C.Trojan, C.Hysteria, C.Hysteria2, C.WireGuard, C.Tuic:
-		name := key
-		if n, ok := proxy.SecretConfig["name"].(string); ok && n != "" {
-			name = n
-		}
-		result := TestProxy(ctx, name, proxy, options, limiter)
-		if result == nil {
-			return nil, fmt.Errorf("test proxy returned nil result")
-		}
-		var r = &models.CProxyWithResult{
-			Result: *result,
-			Proxy:  proxy,
-		}
-		// 存储到缓存
-		if options.Cache != nil {
-			if err := options.Cache.Set(ctx, key, r); err != nil {
-				// 缓存失败不影响返回结果
-				warnf(options, "failed to cache result: %v", err)
-			}
-		}
-		return r, nil
-	case C.Direct, C.Reject, C.Relay, C.Selector, C.Fallback, C.URLTest, C.LoadBalance:
+	tp := proxy.Type()
+	if shouldSkipProxyTest(tp) {
 		return nil, nil
-	default:
-		err = fmt.Errorf("unsupported proxy type: %s", tp)
 	}
-	return nil, err
+
+	name := key
+	if n, ok := proxy.SecretConfig["name"].(string); ok && n != "" {
+		name = n
+	}
+	result := TestProxy(ctx, name, proxy, options, limiter)
+	if result == nil {
+		return nil, fmt.Errorf("test proxy returned nil result")
+	}
+	var r = &models.CProxyWithResult{
+		Result: *result,
+		Proxy:  proxy,
+	}
+	// 存储到缓存
+	if options.Cache != nil {
+		if err := options.Cache.Set(ctx, key, r); err != nil {
+			// 缓存失败不影响返回结果
+			warnf(options, "failed to cache result: %v", err)
+		}
+	}
+	return r, nil
+}
+
+func shouldSkipProxyTest(tp C.AdapterType) bool {
+	switch tp {
+	case C.Direct, C.Reject, C.RejectDrop, C.Compatible, C.Pass, C.Dns, C.Relay, C.Selector, C.Fallback, C.URLTest, C.LoadBalance:
+		return true
+	default:
+		return false
+	}
 }
 
 type proxyTest struct {
