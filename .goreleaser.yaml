@@ -11,11 +11,27 @@ builds:
       - linux
       - windows
       - darwin
-    main: ./app/cli/main.go
+    main: ./cmd/node-quality
+    binary: node-quality
+    tags:
+      - with_quic
+      - with_utls
+      - with_wireguard
+      - with_gvisor
+      - with_clash_api
     ldflags: -s -w
 
 archives:
   - format: tar.gz
+    files:
+      - LICENSE
+      - README.md
+      - THIRD_PARTY_NOTICES.md
+      - LICENSES/**
+      - docs/V2.md
+      - docs/FILTERS.md
+      - internal/filter/UPSTREAM.md
+      - internal/filter/assets/*LICENSE.txt
     # this name template makes the OS and Arch compatible with the results of `uname`.
     name_template: >-
       {{ .ProjectName }}_
