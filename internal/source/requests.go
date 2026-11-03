@@ -26,6 +26,18 @@ type SourceRequest struct {
 	Proxy           string `json:"proxy,omitempty"`
 }
 
+// ClashUserAgent ensures upstream subscription requests advertise Clash compatibility.
+func ClashUserAgent(preferred string) string {
+	preferred = strings.TrimSpace(preferred)
+	if preferred == "" {
+		return "ClashMeta"
+	}
+	if strings.Contains(strings.ToLower(preferred), "clash") {
+		return preferred
+	}
+	return preferred + " ClashMeta"
+}
+
 type SourceResult struct {
 	Index   int         `json:"index"`
 	Error   string      `json:"error,omitempty"`
@@ -211,9 +223,7 @@ type sourceTransport struct {
 func (t *sourceTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	request := req.Clone(req.Context())
 	request.Header = req.Header.Clone()
-	if t.ua != "" {
-		request.Header.Set("User-Agent", t.ua)
-	}
+	request.Header.Set("User-Agent", t.ua)
 	response, err := t.base.RoundTrip(request)
 	if err == nil && response.StatusCode == http.StatusOK && !t.captured {
 		t.captured = true
@@ -253,6 +263,6 @@ func sourceClient(client *http.Client, request SourceRequest, result *SourceResu
 		transport = cloned
 		closeTransport = cloned.CloseIdleConnections
 	}
-	c.Transport = &sourceTransport{base: transport, ua: request.UserAgent, result: result}
+	c.Transport = &sourceTransport{base: transport, ua: ClashUserAgent(request.UserAgent), result: result}
 	return &c, closeTransport, nil
 }

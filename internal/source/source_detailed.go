@@ -103,7 +103,6 @@ func readSourceContent(ctx context.Context, source string, client *http.Client) 
 		if err != nil {
 			return nil, errors.New("invalid source URL")
 		}
-		request.Header.Set("User-Agent", "ClashMeta")
 		response, err := client.Do(request)
 		if err != nil {
 			return nil, errors.New("source fetch failed")

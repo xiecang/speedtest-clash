@@ -47,6 +47,7 @@ func LoadSource(ctx context.Context, source string, client *http.Client, emit fu
 			if err != nil {
 				return errors.New("invalid source URL")
 			}
+			request.Header.Set("User-Agent", ClashUserAgent(""))
 			response, err := client.Do(request)
 			if err != nil {
 				return errors.New("source fetch failed")

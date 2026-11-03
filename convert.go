@@ -58,6 +58,9 @@ func LoadSource(ctx context.Context, source string, client *http.Client, emit fu
 	return sources.LoadSource(ctx, source, client, emit)
 }
 
+// ClashUserAgent adds a Clash product marker to a preferred subscription User-Agent.
+func ClashUserAgent(preferred string) string { return sources.ClashUserAgent(preferred) }
+
 // LoadSourceDetailed isolates failed providers and validates surviving dependencies before emitting.
 func LoadSourceDetailed(ctx context.Context, source string, client *http.Client, emit func([]Node) error) (SourceSummary, error) {
 	return sources.LoadSourceDetailed(ctx, source, client, emit)

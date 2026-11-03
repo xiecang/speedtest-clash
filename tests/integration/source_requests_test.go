@@ -15,9 +15,25 @@ import (
 	nq "github.com/xiecang/node-quality/v2"
 )
 
+func TestLoadSourceUsesClashUserAgent(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.UserAgent() != "ClashMeta" {
+			t.Errorf("unexpected subscription User-Agent %q", r.UserAgent())
+		}
+		fmt.Fprint(w, "proxies: [{name: node, type: ss, server: example.invalid, port: 443, cipher: aes-128-gcm, password: fixture}]")
+	}))
+	defer server.Close()
+	if err := nq.LoadSource(context.Background(), server.URL, server.Client(), func([]nq.Node) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if got := nq.ClashUserAgent("clash-verge/2"); got != "clash-verge/2" {
+		t.Fatalf("Clash product marker duplicated: %q", got)
+	}
+}
+
 func TestOrderedSourceRequestsAndRollback(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("User-Agent") != "custom-client" {
+		if r.Header.Get("User-Agent") != "custom-client ClashMeta" {
 			t.Error("custom UA lost")
 		}
 		switch r.URL.Path {
@@ -48,7 +64,7 @@ func TestOrderedSourceRequestsAndRollback(t *testing.T) {
 
 func TestSourceProxyAndEmpty(t *testing.T) {
 	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !strings.HasPrefix(r.RequestURI, "http://source.invalid/") {
+		if !strings.HasPrefix(r.RequestURI, "http://source.invalid/") || r.UserAgent() != "ClashMeta" {
 			t.Error("not a proxy request")
 		}
 		fmt.Fprint(w, "Proxy: [{name: proxied, type: masque, server: test, port: 443}]")
@@ -82,7 +98,7 @@ func TestMalformedEntriesStillConsumeGlobalBudget(t *testing.T) {
 func TestHTTPSAndSOCKS5SourceProxies(t *testing.T) {
 	const payload = "proxies: [{name: proxied, type: http, server: node.example, port: 443}]"
 	proxy := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Host != "source.invalid" || r.UserAgent() != "proxy-test" {
+		if r.URL.Host != "source.invalid" || r.UserAgent() != "proxy-test ClashMeta" {
 			t.Error("HTTPS proxy request lost target or UA")
 		}
 		fmt.Fprint(w, payload)
@@ -146,7 +162,7 @@ func TestHTTPSAndSOCKS5SourceProxies(t *testing.T) {
 				return err
 			}
 			defer httpRequest.Body.Close()
-			if httpRequest.UserAgent() != "proxy-test" {
+			if httpRequest.UserAgent() != "proxy-test ClashMeta" {
 				return fmt.Errorf("SOCKS request lost UA")
 			}
 			_, err = fmt.Fprintf(conn, "HTTP/1.1 200 OK\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s", len(payload), payload)
