@@ -214,7 +214,11 @@ func (s *sourceSpool) decode(content []byte) (map[string]string, error) {
 			}
 		}
 	}
+	// A YAML flow mapping also starts with '{'; only strict JSON uses native decoding.
 	if bytes.HasPrefix(content, []byte("{")) {
+		if !json.Valid(content) {
+			return s.decodeYAML(content)
+		}
 		var doc map[string]json.RawMessage
 		if err := json.Unmarshal(content, &doc); err != nil {
 			return nil, errors.New("invalid JSON source")

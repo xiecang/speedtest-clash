@@ -35,6 +35,7 @@ HTTP/worker schema 仍为 2；`metric_version=2` 描述本页口径，测量计�
 - `max_active_silence_ns`：读取侧观察到的最大主动阶段静默，包含终止错误/超时前静默，扣除服务端声明的计划 idle 时长；不度量服务端发送抖动，也不能单独发现所有缓冲/突发交付。
 - `idle_marker_seen`：收到并校验 idle 标记，**不宣称观测到了完整真实空闲时段**。
 - `resume_observed`：idle 标记后收到连续序号数据；不等于验证服务端实际空闲了指定时长。
+- 失败流的 `failure_stage` 区分 connect、active、idle、resume（计划空闲结束后仍未恢复）、resumed、completion；`failure_reason` 仅记录 timeout、eof、connection_reset、websocket_close、invalid_frame、cancelled、read_error 等固定类别，不包含原始连接错误或凭据。`failure_code` 和失败归因保持独立。
 - 完整通过要求三种协议各自连续序号、idle 标记、恢复数据、结束标记和最短时长。任一可信 fail 优先于其它协议的 unknown；三条协议和帧数不扩充成独立成功次数。
 - H2 未协商、探针 HTTP 拒绝/满载、控制失败为 unknown。探针 HTTP 错误保留 `probe_http_<status>`；不能因此隔离节点。父任务取消也不是节点故障。
 

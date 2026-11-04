@@ -41,6 +41,8 @@ type StreamResult struct {
 	IdleMarkerSeen   bool          `json:"idle_marker_seen"`
 	ResumeObserved   bool          `json:"resume_observed"`
 	FailureCode      string        `json:"failure_code,omitempty"`
+	FailureStage     string        `json:"failure_stage,omitempty"`
+	FailureReason    string        `json:"failure_reason,omitempty"`
 }
 
 type ServiceResult struct {

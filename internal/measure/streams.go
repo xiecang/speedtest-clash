@@ -7,11 +7,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/coder/websocket"
@@ -37,7 +40,13 @@ func measureStreams(ctx context.Context, dial model.DialContext, plan model.Plan
 func measureStream(parent context.Context, dial model.DialContext, plan model.Plan, protocol string) (result model.StreamResult) {
 	started := time.Now()
 	result = model.StreamResult{Protocol: protocol, Status: model.Unknown, MeasuredAt: started}
-	defer func() { result.Duration = time.Since(started) }()
+	stage := "connect"
+	defer func() {
+		result.Duration = time.Since(started)
+		if result.Status != model.Pass {
+			result.FailureStage = stage
+		}
+	}()
 	ctx, cancel := context.WithTimeout(parent, plan.AI.Duration+20*time.Second)
 	defer cancel()
 	client, transport := probeClient(dial, plan, protocol == "h2")
@@ -112,7 +121,7 @@ func measureStream(parent context.Context, dial model.DialContext, plan model.Pl
 			}
 			err := scanner.Err()
 			if err == nil {
-				err = errors.New("missing end marker")
+				err = io.EOF
 			}
 			return model.StreamFrame{}, err
 		}
@@ -121,6 +130,15 @@ func measureStream(parent context.Context, dial model.DialContext, plan model.Pl
 	last := time.Now()
 	idleUntil := time.Time{}
 	for {
+		stage = "active"
+		if !idleUntil.IsZero() {
+			stage = "idle"
+			if !time.Now().Before(idleUntil) {
+				stage = "resume"
+			}
+		} else if result.ResumeObserved {
+			stage = "resumed"
+		}
 		deadline := time.Now().Add(10 * time.Second)
 		if idleUntil.After(time.Now()) {
 			deadline = idleUntil.Add(10 * time.Second)
@@ -130,15 +148,22 @@ func measureStream(parent context.Context, dial model.DialContext, plan model.Pl
 		// with this deadline; no helper goroutine survives the stream.
 		stop := context.AfterFunc(readCtx, closeStream)
 		frame, err := next(readCtx)
+		readErr := readCtx.Err()
 		stop()
 		readCancel()
 		if err != nil {
+			if stage == "idle" && !time.Now().Before(idleUntil) {
+				stage = "resume"
+			}
 			baseline := last
 			if !idleUntil.IsZero() {
 				baseline = idleUntil
 			}
 			result.MaxActiveSilence = max(result.MaxActiveSilence, max(time.Duration(0), time.Since(baseline)))
 			setStreamFailure(&result, err, parent, "stream_incomplete", false)
+			if readErr != nil && parent.Err() == nil {
+				result.FailureReason = streamFailureReason(readErr)
+			}
 			return
 		}
 		now := time.Now()
@@ -184,6 +209,7 @@ func measureStream(parent context.Context, dial model.DialContext, plan model.Pl
 			result.Frames++
 			last = now
 		case "done":
+			stage = "completion"
 			if frame.Sequence != result.Frames || result.Frames == 0 || !result.IdleMarkerSeen || !result.ResumeObserved || !idleUntil.IsZero() || time.Since(started) < MinimumStreamDuration(plan.AI.Duration) {
 				setStreamFailure(&result, nil, parent, "invalid_end_marker", true)
 				return
@@ -200,6 +226,9 @@ func measureStream(parent context.Context, dial model.DialContext, plan model.Pl
 func setStreamFailure(result *model.StreamResult, err error, parent context.Context, code string, probe bool) {
 	result.Status = model.Unknown
 	result.FailureCode = code
+	if err != nil {
+		result.FailureReason = streamFailureReason(err)
+	}
 	if probe {
 		result.FailureOrigin = model.FailureOriginProbe
 	} else {
@@ -212,5 +241,28 @@ func setStreamFailure(result *model.StreamResult, err error, parent context.Cont
 	}
 	if result.FailureOrigin == model.FailureOriginNode {
 		result.Status = model.Fail
+	}
+}
+
+// Only bounded categories leave the worker; native error text can contain credentials.
+func streamFailureReason(err error) string {
+	var network net.Error
+	var syntax *json.SyntaxError
+	var value *json.UnmarshalTypeError
+	switch {
+	case errors.Is(err, context.Canceled):
+		return "cancelled"
+	case errors.Is(err, context.DeadlineExceeded), errors.As(err, &network) && network.Timeout():
+		return "timeout"
+	case errors.Is(err, io.EOF), errors.Is(err, io.ErrUnexpectedEOF):
+		return "eof"
+	case errors.Is(err, syscall.ECONNRESET):
+		return "connection_reset"
+	case errors.As(err, &syntax), errors.As(err, &value):
+		return "invalid_frame"
+	case websocket.CloseStatus(err) != -1:
+		return "websocket_close"
+	default:
+		return "read_error"
 	}
 }

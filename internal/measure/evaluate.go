@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptrace"
 	"net/url"
@@ -32,6 +33,14 @@ func setProbeHeaders(request *http.Request, plan model.Plan) {
 }
 
 func probeClient(dial model.DialContext, plan model.Plan, h2 bool) (*http.Client, *http.Transport) {
+	if dial == nil {
+		dial = (&net.Dialer{}).DialContext
+	}
+	connect := func(ctx context.Context, network, address string) (net.Conn, error) {
+		ctx, cancel := context.WithTimeout(ctx, plan.ProbeTimeout)
+		defer cancel()
+		return dial(ctx, network, address)
+	}
 	tlsConfig := &tls.Config{MinVersion: tls.VersionTLS12}
 	if plan.ProbeTLSConfig != nil {
 		tlsConfig = plan.ProbeTLSConfig.Clone()
@@ -39,7 +48,7 @@ func probeClient(dial model.DialContext, plan model.Plan, h2 bool) (*http.Client
 	if !h2 {
 		tlsConfig.NextProtos = []string{"http/1.1"}
 	}
-	transport := &http.Transport{DialContext: dial, TLSClientConfig: tlsConfig, ForceAttemptHTTP2: h2, DisableCompression: true, ResponseHeaderTimeout: plan.ProbeTimeout, TLSHandshakeTimeout: plan.ProbeTimeout, MaxIdleConnsPerHost: 5}
+	transport := &http.Transport{DialContext: connect, TLSClientConfig: tlsConfig, ForceAttemptHTTP2: h2, DisableCompression: true, ResponseHeaderTimeout: plan.ProbeTimeout, TLSHandshakeTimeout: plan.ProbeTimeout, MaxIdleConnsPerHost: 5}
 	if !h2 {
 		transport.TLSNextProto = make(map[string]func(string, *tls.Conn) http.RoundTripper)
 	}
