@@ -6,12 +6,16 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 
 	box "github.com/sagernet/sing-box"
+	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing-box/include"
 	"github.com/sagernet/sing-box/option"
+	"github.com/sagernet/sing-tun"
 	sj "github.com/sagernet/sing/common/json"
 	M "github.com/sagernet/sing/common/metadata"
+	"github.com/sagernet/sing/service"
 	"github.com/xiecang/node-quality/v2/internal/codec"
 	"github.com/xiecang/node-quality/v2/internal/model"
 )
@@ -77,7 +81,7 @@ func (b *Batch) openSingBox(ctx context.Context, nodes []model.Node) error {
 
 // CheckSingBox constructs but does not start the native runtime.
 func CheckSingBox(ctx context.Context, content []byte) error {
-	ctx = include.Context(ctx)
+	ctx = include.Context(service.ExtendContext(ctx))
 	var shape struct {
 		Route struct {
 			Rules []struct{}
@@ -95,9 +99,33 @@ func CheckSingBox(ctx context.Context, content []byte) error {
 	if err := sj.UnmarshalContext(ctx, content, &options); err != nil {
 		return err
 	}
-	instance, err := box.New(box.Options{Context: ctx, Options: options})
-	if err != nil {
-		return err
+	// Reject gVisor address failures before its constructor allocates a stack.
+	for _, endpoint := range options.Endpoints {
+		if wg, ok := endpoint.Options.(*option.WireGuardEndpointOptions); ok && tun.WithGVisor {
+			// gVisor registers the IPv4 broadcast address before user addresses.
+			seen := map[netip.Addr]bool{netip.AddrFrom4([4]byte{255, 255, 255, 255}): true}
+			for _, prefix := range wg.Address {
+				if !prefix.IsValid() {
+					return errors.New("invalid WireGuard local address")
+				}
+				if seen[prefix.Addr()] {
+					return errors.New("duplicate WireGuard local address")
+				}
+				seen[prefix.Addr()] = true
+			}
+		}
 	}
-	return instance.Close()
+	// A failed constructor must never leave the caller's endpoint manager in this slot.
+	service.MustRegister[adapter.EndpointManager](ctx, nil)
+	instance, err := box.New(box.Options{Context: ctx, Options: options})
+	// Unstarted managers skip Close, but WireGuard already owns gVisor processors.
+	if manager := service.FromContext[adapter.EndpointManager](ctx); manager != nil {
+		for _, endpoint := range manager.Endpoints() {
+			err = errors.Join(err, endpoint.Close())
+		}
+	}
+	if instance != nil {
+		err = errors.Join(err, instance.Close())
+	}
+	return err
 }
