@@ -281,6 +281,8 @@ github.com/metacubex/mipstack v0.0.0-20260930071539-961d4b1c1983 h1:BGb9PDJrrZSs
 github.com/metacubex/mipstack v0.0.0-20260930071539-961d4b1c1983/go.mod h1:+bbwALZI0pbi2auSG5A3ptdpV2DZ2eLObziXo+P7oj0=
 github.com/metacubex/mlkem v0.1.0 h1:wFClitonSFcmipzzQvax75beLQU+D7JuC+VK1RzSL8I=
 github.com/metacubex/mlkem v0.1.0/go.mod h1:amhaXZVeYNShuy9BILcR7P0gbeo/QLZsnqCdL8U2PDQ=
+github.com/metacubex/nftables v0.0.0-20260426003805-208c2c1ba2cb h1:wk6mHYPURSUvWcUv72gNP79oiylFsscBSDPJ6ieV6Iw=
+github.com/metacubex/nftables v0.0.0-20260426003805-208c2c1ba2cb/go.mod h1:73ZrCfhdkW4F2E2GAlta3km/S2RHhFNogCMtWZV2anQ=
 github.com/metacubex/qpack v0.6.0 h1:YqClGIMOpiRYLjV1qOs483Od08MdPgRnHjt90FuaAKw=
 github.com/metacubex/qpack v0.6.0/go.mod h1:lKGSi7Xk94IMvHGOmxS9eIei3bvIqpOAImEBsaOwTkA=
 github.com/metacubex/quic-go v0.61.1-0.20260727080200-2548683b76f4 h1:7oX6CpHVqoUXNyyt0MTuO5ywd1qVe1S1t3jXWMW7bYc=

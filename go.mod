@@ -21,6 +21,7 @@ require (
 	github.com/metacubex/age v0.0.0-20260603010618-28d156b4ea78 // indirect
 	github.com/metacubex/chi v0.1.1 // indirect
 	github.com/metacubex/mhurl v0.1.0 // indirect
+	github.com/metacubex/nftables v0.0.0-20260426003805-208c2c1ba2cb // indirect
 	github.com/metacubex/sevenzip v1.6.4 // indirect
 	github.com/metacubex/sing-tun v0.4.27 // indirect
 	github.com/oschwald/maxminddb-golang v1.13.1 // indirect
