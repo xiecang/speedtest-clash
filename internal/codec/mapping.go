@@ -14,6 +14,9 @@ import (
 // ClashConfig converts native sing-box nodes only when all fields are understood.
 func ClashConfig(node model.Node) (map[string]any, error) {
 	if node.Format == model.ClashYAML {
+		if err := validateWireGuardDNS(node.Config); err != nil {
+			return nil, err
+		}
 		return model.CloneMap(node.Config), nil
 	}
 	if node.Format != model.SingBoxJSON {
