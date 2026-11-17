@@ -22,8 +22,8 @@ func ServiceCheckRevision(check model.ServiceCheck) string {
 }
 
 func validateServiceChecks(plan model.Plan) error {
-	if len(plan.ServiceChecks) > 3 {
-		return errors.New("at most three optional service checks")
+	if len(plan.ServiceChecks) > 4 {
+		return errors.New("at most four optional service checks")
 	}
 	names := map[string]bool{}
 	for name := range plan.ServiceURLs {
@@ -34,7 +34,7 @@ func validateServiceChecks(plan model.Plan) error {
 			return errors.New("duplicate or invalid service ID")
 		}
 		names[strings.ToLower(name)] = true
-		if check.Kind != "openai-mobile" && check.Kind != "http" && check.Kind != "imgur" {
+		if check.Kind != "openai-mobile" && check.Kind != "http" && check.Kind != "imgur" && check.Kind != "anthropic" {
 			return errors.New("unsupported service checker")
 		}
 		u, err := url.Parse(check.URL)
@@ -85,6 +85,18 @@ func checkOptionalService(ctx context.Context, client *http.Client, check model.
 			result.FailureCode = "service_blocked"
 		case (response.StatusCode == 200 || response.StatusCode == 403) && strings.Contains(text, "request is not allowed. please try again later."):
 			result.Status = model.Pass
+		default:
+			result.FailureCode = "unexpected_service_response"
+		}
+	} else if check.Kind == "anthropic" {
+		// An unauthenticated API call reaches key validation only from a supported region.
+		text := strings.ToLower(string(body))
+		switch {
+		case response.StatusCode == http.StatusUnauthorized && strings.Contains(text, "authentication_error"):
+			result.Status = model.Pass
+		case response.StatusCode == http.StatusForbidden && strings.Contains(text, "forbidden"):
+			result.Status = model.Fail
+			result.FailureCode = "service_region_blocked"
 		default:
 			result.FailureCode = "unexpected_service_response"
 		}

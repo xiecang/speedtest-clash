@@ -39,6 +39,33 @@ func TestOptionalMobileServiceResponseAndRevision(t *testing.T) {
 	}
 }
 
+func TestAnthropicServiceRegion(t *testing.T) {
+	for _, tc := range []struct {
+		status int
+		body   string
+		want   model.Status
+	}{
+		{401, `{"type":"error","error":{"type":"authentication_error","message":"x-api-key header is required"}}`, model.Pass},
+		{403, `{"type":"error","error":{"type":"forbidden","message":"Request not allowed"}}`, model.Fail},
+		{403, "<title>Just a moment...</title>", model.Unknown},
+		{200, "{}", model.Unknown},
+	} {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(tc.status)
+			_, _ = w.Write([]byte(tc.body))
+		}))
+		check := model.ServiceCheck{Kind: "anthropic", URL: server.URL}
+		got := checkOptionalService(context.Background(), server.Client(), check, time.Second)
+		server.Close()
+		if got.Status != tc.want {
+			t.Fatal(got, tc)
+		}
+	}
+	if err := validateServiceChecks(model.DefaultPlan()); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestLightProfilesAvoidDownloadsAndReuseOnlyMatchingService(t *testing.T) {
 	for _, core := range []model.Core{model.Mihomo, model.SingBox} {
 		t.Run(string(core), func(t *testing.T) {

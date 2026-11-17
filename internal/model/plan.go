@@ -56,7 +56,7 @@ type Plan struct {
 }
 
 func DefaultPlan() Plan {
-	return Plan{ServiceChecks: map[string]ServiceCheck{"OpenAI-Android": {Kind: "openai-mobile", URL: "https://android.chat.openai.com"}, "OpenAI-iOS": {Kind: "openai-mobile", URL: "https://ios.chat.openai.com/"}, "Imgur": {Kind: "imgur", URL: "https://i.imgur.com/hI88z6W.jpeg"}}, ExitIPURL: "https://api.ipify.org?format=json", Core: Mihomo, Profile: "general", DownloadBytes: 50 << 20, DownloadConcurrency: 5,
+	return Plan{ServiceChecks: map[string]ServiceCheck{"OpenAI-Android": {Kind: "openai-mobile", URL: "https://android.chat.openai.com"}, "OpenAI-iOS": {Kind: "openai-mobile", URL: "https://ios.chat.openai.com/"}, "Imgur": {Kind: "imgur", URL: "https://i.imgur.com/hI88z6W.jpeg"}, "Anthropic": {Kind: "anthropic", URL: "https://api.anthropic.com/v1/models"}}, ExitIPURL: "https://api.ipify.org?format=json", Core: Mihomo, Profile: "general", DownloadBytes: 50 << 20, DownloadConcurrency: 5,
 		SampleWindow: 15 * time.Second, ProbeTimeout: 10 * time.Second, LivenessConcurrency: 64,
 		AI: AIPlan{Concurrency: 5, CandidateLimit: 50, Duration: 180 * time.Second, RetestInterval: 2 * time.Hour, Validity: 6 * time.Hour}}
 }
