@@ -80,3 +80,21 @@ func TestEmitStreamGuaranteesResumeFrameWhenJitterJumpsToEnd(t *testing.T) {
 		t.Fatalf("missing post-idle data frame before done: %+v", frames)
 	}
 }
+
+func TestStreamIdleBoundsCapsLongSilentGapBelowProxyTimeout(t *testing.T) {
+	t0 := time.Unix(1700000000, 0)
+	startShort, endShort := streamIdleBounds(t0, 600*time.Millisecond)
+	if endShort.Sub(startShort) != 200*time.Millisecond || startShort.Sub(t0) != 200*time.Millisecond {
+		t.Fatalf("unexpected short bounds: start=%v end=%v", startShort.Sub(t0), endShort.Sub(t0))
+	}
+	for _, total := range []time.Duration{90 * time.Second, 180 * time.Second} {
+		idleStart, idleEnd := streamIdleBounds(t0, total)
+		gap := idleEnd.Sub(idleStart)
+		if gap != 25*time.Second {
+			t.Fatalf("total=%s expected 25s capped idle gap, got %s", total, gap)
+		}
+		if idleStart.Sub(t0) < 30*time.Second || t0.Add(total).Sub(idleEnd) < 30*time.Second {
+			t.Fatalf("total=%s expected active phases around idle window, got start=%s end=%s", total, idleStart.Sub(t0), idleEnd.Sub(t0))
+		}
+	}
+}

@@ -154,10 +154,17 @@ func ProbeHandler(options ProbeOptions) http.Handler {
 	})
 }
 
+const maxSilentIdleWindow = 25 * time.Second
+
+func streamIdleBounds(started time.Time, duration time.Duration) (time.Time, time.Time) {
+	idleDuration := min(duration/3, maxSilentIdleWindow)
+	idleStart := started.Add((duration - idleDuration) / 2)
+	return idleStart, idleStart.Add(idleDuration)
+}
+
 func emitStream(ctx context.Context, duration, interval time.Duration, send func(model.StreamFrame) error) error {
 	started := time.Now()
-	idleStart := started.Add(duration / 3)
-	idleEnd := started.Add(2 * duration / 3)
+	idleStart, idleEnd := streamIdleBounds(started, duration)
 	end := started.Add(duration)
 	var sequence int64
 	idleSent := false

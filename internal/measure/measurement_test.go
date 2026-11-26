@@ -174,3 +174,68 @@ func TestRateLimitedSampleIsNormalAndCancelledReadsStayWithinBudget(t *testing.T
 		t.Fatalf("read exceeded budget: %+v", m)
 	}
 }
+
+func TestSingleTransientHealthDropAndConcurrentStreamCapDoNotFalseKillNode(t *testing.T) {
+	base := probe.ProbeHandler(probe.ProbeOptions{})
+	var healthCalls, downloadCalls int
+	var mu struct {
+		health, download int
+	}
+	_ = healthCalls
+	_ = downloadCalls
+	var lock = make(chan struct{}, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		lock <- struct{}{}
+		switch r.URL.Path {
+		case "/api/v2/probe/health":
+			mu.health++
+			call := mu.health
+			<-lock
+			// Call 1 is Evaluate's direct probeControl check; call 2 is the node's 1st cold health check.
+			if call == 2 {
+				panic(http.ErrAbortHandler)
+			}
+			base.ServeHTTP(w, r)
+			return
+		case "/api/v2/probe/download":
+			mu.download++
+			call := mu.download
+			<-lock
+			// Allow streams 1 & 2 to complete (calls 1 & 2), and abort stream 3 and its retry (calls >= 3).
+			if call >= 3 {
+				w.Header().Set("X-Node-Quality-Probe", "2")
+				w.Header().Set("Content-Length", "10240")
+				_, _ = w.Write([]byte("abc"))
+				w.(http.Flusher).Flush()
+				panic(http.ErrAbortHandler)
+			}
+			base.ServeHTTP(w, r)
+			return
+		}
+		<-lock
+		base.ServeHTTP(w, r)
+	}))
+	defer srv.Close()
+
+	node, err := codec.NewNode(map[string]any{"type": "direct", "tag": "local"}, model.SingBoxJSON)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan := model.DefaultPlan()
+	plan.Core = model.SingBox
+	plan.ProbeURL = srv.URL
+	plan.ExitIPURL = ""
+	plan.DownloadConcurrency = 3
+	plan.DownloadBytes = 30 * 1024
+	reports, err := Evaluate(context.Background(), []model.Node{node}, plan, NewBudget(0))
+	if err != nil || len(reports) != 1 {
+		t.Fatalf("reports=%+v err=%v", reports, err)
+	}
+	r := reports[0]
+	if r.Status != model.Pass || r.Metrics.HealthFailures != 1 || r.Metrics.ColdHealthSamples+r.Metrics.ReusedHealthSamples != 4 {
+		t.Fatalf("expected pass with 1 tolerated health drop, got %+v", r)
+	}
+	if r.Metrics.DownloadBytes < 20*1024 || r.Metrics.DownloadBytes > 30*1024 || r.Metrics.DownloadEndReason != "partial_budget" {
+		t.Fatalf("expected >=20KiB partial_budget from 2/3 surviving streams, got %+v", r.Metrics)
+	}
+}

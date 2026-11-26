@@ -34,7 +34,7 @@ func setProbeHeaders(request *http.Request, plan model.Plan) {
 
 func probeClient(dial model.DialContext, plan model.Plan, h2 bool) (*http.Client, *http.Transport) {
 	if dial == nil {
-		dial = (&net.Dialer{}).DialContext
+		dial = (&net.Dialer{KeepAlive: 15 * time.Second}).DialContext
 	}
 	connect := func(ctx context.Context, network, address string) (net.Conn, error) {
 		ctx, cancel := context.WithTimeout(ctx, plan.ProbeTimeout)
@@ -355,7 +355,9 @@ func evaluateNodeWithControl(ctx context.Context, node model.Node, dial model.Di
 		if err != nil {
 			healthError = err
 			failed++
-			if i == 0 {
+			origin, _ := failureOrigin(err, ctx)
+			transient := attempts > 1 && origin == model.FailureOriginUnknown && healthHTTPStatus == 0 && !errors.Is(err, errInvalidProbeSignature)
+			if !transient || failed > 1 {
 				break
 			}
 		}
@@ -393,7 +395,13 @@ func evaluateNodeWithControl(ctx context.Context, node model.Node, dial model.Di
 		report.FreshUntil = time.Now().Add(24 * time.Hour)
 		return
 	}
-	if failed > 0 {
+	maxHealthFailures := 0
+	if attempts > 1 && healthHTTPStatus == 0 && !errors.Is(healthError, errInvalidProbeSignature) {
+		if origin, _ := failureOrigin(healthError, ctx); origin == model.FailureOriginUnknown {
+			maxHealthFailures = 1
+		}
+	}
+	if failed > maxHealthFailures {
 		report.FailureOrigin, report.FailureCode = failureOrigin(healthError, ctx)
 		if report.FailureOrigin != model.FailureOriginNode && ctx.Err() == nil && (healthHTTPStatus != 0 || !control || !recheckControl(ctx)) {
 			report.FailureOrigin = model.FailureOriginProbe
