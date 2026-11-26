@@ -6,7 +6,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"net"
 	"runtime/pprof"
 	"strings"
@@ -15,6 +17,8 @@ import (
 
 	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing/service"
+	"github.com/xiecang/node-quality/v2/internal/codec"
+	"github.com/xiecang/node-quality/v2/internal/model"
 )
 
 func TestCheckSingBoxReleasesUnstartedWireGuard(t *testing.T) {
@@ -92,4 +96,117 @@ func gvisorProcessors(t *testing.T) int {
 		t.Fatal(err)
 	}
 	return strings.Count(stacks.String(), "github.com/sagernet/gvisor/pkg/tcpip/transport/tcp.(*processor).start(")
+}
+
+func TestOpenSingBoxReleasesWireGuardAndIsolatesFailures(t *testing.T) {
+	before := gvisorProcessors(t)
+	privSecret := bytes.Repeat([]byte{0x42}, 32)
+	pskSecret := bytes.Repeat([]byte{0x99}, 32)
+	privB64 := base64.StdEncoding.EncodeToString(privSecret)
+	privHex := hex.EncodeToString(privSecret)
+	pskB64 := base64.StdEncoding.EncodeToString(pskSecret)
+	pskHex := hex.EncodeToString(pskSecret)
+	pubB64 := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0x07}, 32))
+
+	healthyDirect, err := codec.NewNode(map[string]any{"type": "direct", "tag": "direct-ok"}, model.SingBoxJSON)
+	if err != nil {
+		t.Fatal(err)
+	}
+	healthyWG, err := codec.NewNode(map[string]any{
+		"name": "wg-ok", "type": "wireguard", "server": "192.0.2.1", "port": 51820,
+		"ip": "10.0.0.2/32", "private-key": privB64, "public-key": pubB64, "pre-shared-key": pskB64,
+	}, model.ClashYAML)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Invalid peer key / address triggers construction or Start/IpcSet failure that bisection must isolate.
+	badWG, err := codec.NewNode(map[string]any{
+		"name": "wg-bad", "type": "wireguard", "server": "192.0.2.2", "port": 51820,
+		"ip": "255.255.255.255/32", "private-key": privB64, "public-key": pubB64, "pre-shared-key": pskB64,
+	}, model.ClashYAML)
+	if err != nil {
+		t.Fatal(err)
+	}
+	badStartWG, err := codec.NewNode(map[string]any{
+		"name": "wg-bad-ipc", "type": "wireguard", "server": "192.0.2.3", "port": 51820,
+		"ip": "10.0.0.3/32", "private-key": base64.StdEncoding.EncodeToString([]byte("short")), "public-key": pubB64, "pre-shared-key": pskB64,
+	}, model.ClashYAML)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decodedChain, err := codec.Decode([]byte(`{"outbounds":[{"type":"direct","tag":"entry"},{"type":"http","tag":"chained-ok","server":"192.0.2.10","server_port":8080,"detour":"entry"}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	nodes := append([]model.Node{healthyDirect, healthyWG, badWG, badStartWG}, decodedChain.Nodes...)
+	callerManager := &struct{ adapter.EndpointManager }{}
+	ctx := service.ContextWith[adapter.EndpointManager](context.Background(), callerManager)
+
+	for range 3 {
+		batch, err := OpenBatch(ctx, nodes, model.SingBox)
+		if err != nil {
+			t.Fatalf("OpenBatch failed instead of isolating bad nodes: %v", err)
+		}
+		if service.FromContext[adapter.EndpointManager](ctx) != callerManager {
+			_ = batch.Close()
+			t.Fatal("OpenBatch replaced caller's endpoint manager")
+		}
+		for _, okNode := range []model.Node{healthyDirect, healthyWG, decodedChain.Nodes[0], decodedChain.Nodes[1]} {
+			if _, dErr := batch.Dialer(okNode.Key); dErr != nil {
+				_ = batch.Close()
+				t.Fatalf("healthy node %s lost dialer: %v", okNode.Key, dErr)
+			}
+		}
+		for _, badNode := range []model.Node{badWG, badStartWG} {
+			_, dErr := batch.Dialer(badNode.Key)
+			if dErr == nil {
+				_ = batch.Close()
+				t.Fatalf("expected failure for %s", badNode.Key)
+			}
+			for _, secret := range []string{privB64, privHex, pskB64, pskHex} {
+				if strings.Contains(dErr.Error(), secret) {
+					_ = batch.Close()
+					t.Fatalf("secret leaked in failure error: %v", dErr)
+				}
+			}
+		}
+		if err := batch.Close(); err != nil {
+			t.Fatalf("batch.Close failed: %v", err)
+		}
+	}
+
+	deadline := time.Now().Add(time.Second)
+	for gvisorProcessors(t) > before && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if after := gvisorProcessors(t); after > before {
+		t.Fatalf("OpenBatch WireGuard processors leaked: before=%d after=%d", before, after)
+	}
+}
+
+func TestSanitizeEngineErrorRedactsWireGuardSecrets(t *testing.T) {
+	sentinel := errors.New("unsupported cipher: invalid-cipher")
+	if got := sanitizeEngineError(sentinel); got != sentinel {
+		t.Fatalf("clean error was replaced: %v", got)
+	}
+
+	ipcErr := errors.New("start native sing-box: start endpoint[wireguard/wg]: setup wireguard: \nprivate_key=0102030405060708\npublic_key=deadbeef\npreshared_key=cafebabe12345678\nallowed_ip=0.0.0.0/0\n: ipcErrorf: -22")
+	sanitized := sanitizeEngineError(ipcErr)
+	for _, forbidden := range []string{"0102030405060708", "cafebabe12345678", "allowed_ip=0.0.0.0/0"} {
+		if strings.Contains(sanitized.Error(), forbidden) {
+			t.Fatalf("IPC dump leaked %q in %q", forbidden, sanitized.Error())
+		}
+	}
+	if !strings.Contains(sanitized.Error(), "ipcErrorf: -22") {
+		t.Fatalf("lost underlying non-secret cause: %q", sanitized.Error())
+	}
+
+	inlineErr := errors.New(`parse failure: private_key=secretA preshared_key=secretB "private-key":"secretC"`)
+	inlineSanitized := sanitizeEngineError(inlineErr).Error()
+	for _, forbidden := range []string{"secretA", "secretB", "secretC"} {
+		if strings.Contains(inlineSanitized, forbidden) {
+			t.Fatalf("inline secret %q leaked in %q", forbidden, inlineSanitized)
+		}
+	}
 }

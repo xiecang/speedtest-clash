@@ -192,6 +192,9 @@ func ConvertSelected(ctx context.Context, content []byte, format model.Format, o
 	if len(decoded.Diagnostics) > 0 {
 		return nil, decoded.Diagnostics, errors.New("source contains unsupported entries")
 	}
+	if len(decoded.Providers) > 0 && len(decoded.Nodes) == 0 {
+		return nil, decoded.Diagnostics, errors.New("external proxy-providers require LoadSource; ConvertSelected only converts inline nodes")
+	}
 	selector, err := filter.Compile(ctx, options)
 	if err != nil {
 		return nil, decoded.Diagnostics, err

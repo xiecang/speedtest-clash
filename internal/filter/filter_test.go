@@ -182,7 +182,7 @@ func TestResultCacheTracksContentExpressionAndDisplayName(t *testing.T) {
 	if _, ok := cache.get(a); ok {
 		t.Fatal("cache did not evict oldest entry")
 	}
-	if value, ok := cache.get(b); !ok || !value || len(cache.values) != 2 {
+	if value, ok := cache.get(b); !ok || !value || cache.size() != 2 {
 		t.Fatal("cache lost retained entry or exceeded bound")
 	}
 }
@@ -207,5 +207,91 @@ func TestBatchSplitsLargeValidConfigurations(t *testing.T) {
 	}
 	if _, err = selector.Match(context.Background(), []model.Node{{Name: "allow-big", Config: map[string]any{"value": strings.Repeat("x", 1<<20)}}}); err == nil {
 		t.Fatal("oversized individual object accepted")
+	}
+}
+
+func TestQuickJSVMPreservedOnJSException(t *testing.T) {
+	ctx := context.Background()
+	// Drain pool first so we track one concrete machine instance.
+	for {
+		select {
+		case m := <-machines:
+			m.runtime.Close(ctx)
+		default:
+			goto drained
+		}
+	}
+drained:
+	if _, err := Compile(ctx, Options{Filter: "name:HK"}); err != nil {
+		t.Fatal(err)
+	}
+	var first *machine
+	select {
+	case first = <-machines:
+		machines <- first
+	default:
+		t.Fatal("expected warm machine in pool")
+	}
+	// Trigger a JS SyntaxError exception; the healthy VM must be returned to the pool.
+	if _, err := Compile(ctx, Options{Filter: "name:["}); err == nil {
+		t.Fatal("expected invalid filter error")
+	}
+	var after *machine
+	select {
+	case after = <-machines:
+		machines <- after
+	default:
+		t.Fatal("machine was closed instead of recycled after JS exception")
+	}
+	if first != after {
+		t.Fatal("expected exact same QuickJS VM instance to be preserved across JS exception")
+	}
+}
+
+func TestFastPathValidatedIdentityCacheAndMutationDetection(t *testing.T) {
+	ctx := context.Background()
+	nodes := make([]model.Node, 50000)
+	baseCfg := map[string]any{
+		"type":    "vless",
+		"server":  "edge.invalid",
+		"port":    443,
+		"uuid":    "00000000-0000-4000-8000-000000000001",
+		"tls":     true,
+		"network": "ws",
+		"ws-opts": map[string]any{"path": "/fast", "headers": map[string]any{"Host": "edge.invalid"}},
+	}
+	key, err := model.IdentityKey(baseCfg, model.ClashYAML, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range nodes {
+		nodes[i] = model.Node{
+			Key:      key,
+			Revision: key,
+			Name:     fmt.Sprintf("HK-%05d", i),
+			Format:   model.ClashYAML,
+			Config:   baseCfg,
+		}
+	}
+	s, err := Compile(ctx, Options{Filter: "name:HK and server=edge[.]invalid"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for round := 0; round < 2; round++ {
+		start := time.Now()
+		mask, err := s.Match(ctx, nodes)
+		if err != nil || len(mask) != len(nodes) || !mask[0] || !mask[len(mask)-1] {
+			t.Fatalf("round %d failed: err=%v", round, err)
+		}
+		t.Logf("fast-path round=%d nodes=%d elapsed=%s", round, len(nodes), time.Since(start))
+	}
+
+	// Mutating Config behind a frozen Key must invalidate ValidateIdentity and not return stale true.
+	mutatedCfg := model.CloneMap(baseCfg)
+	single := model.Node{Key: key, Revision: key, Name: "HK-00000", Format: model.ClashYAML, Config: mutatedCfg}
+	mutatedCfg["server"] = "other.invalid"
+	mask, err := s.Match(ctx, []model.Node{single})
+	if err != nil || mask[0] {
+		t.Fatalf("mutated config behind frozen Key returned stale cache hit: mask=%v err=%v", mask, err)
 	}
 }

@@ -8,8 +8,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -25,13 +25,19 @@ func LoadSource(ctx context.Context, source string, client *http.Client, emit fu
 		client = &http.Client{Timeout: 30 * time.Second}
 	}
 	visited := make(map[string]bool)
-	var all []model.Node
+	type rawNodeKey struct {
+		name, key, dep string
+	}
+	var rawNodes []model.Node
 	var sourceBytes int
-	collected := make(map[string]bool)
+	seenRaw := make(map[rawNodeKey]bool)
 	var load func(string, int) error
 	load = func(source string, depth int) error {
 		if depth > 8 {
 			return errors.New("provider depth exceeds 8")
+		}
+		if !isRemoteHTTPURL(source) && !strings.HasPrefix(source, "inline:") {
+			source = filepath.Clean(source)
 		}
 		if visited[source] {
 			return errors.New("provider cycle detected")
@@ -78,7 +84,7 @@ func LoadSource(ctx context.Context, source string, client *http.Client, emit fu
 		if len(content) > codec.MaxSourceBytes || sourceBytes > codec.MaxSourceBytes {
 			return errors.New("source and recursive providers exceed 16MiB")
 		}
-		decoded, err := codec.Decode(content)
+		decoded, err := codec.DecodeUnresolved(content)
 		if err != nil {
 			return err
 		}
@@ -86,11 +92,17 @@ func LoadSource(ctx context.Context, source string, client *http.Client, emit fu
 			return fmt.Errorf("source has %d unsupported entries; first reason: %s", len(decoded.Diagnostics), decoded.Diagnostics[0].Message)
 		}
 		for _, node := range decoded.Nodes {
-			if !collected[node.Key] {
-				all = append(all, node)
-				collected[node.Key] = true
+			depField := "dialer-proxy"
+			if node.Format == model.SingBoxJSON {
+				depField = "detour"
 			}
-			if len(all) > 50000 {
+			dep, _ := node.Config[depField].(string)
+			rk := rawNodeKey{name: node.Name, key: node.Key, dep: dep}
+			if !seenRaw[rk] {
+				rawNodes = append(rawNodes, node)
+				seenRaw[rk] = true
+			}
+			if len(rawNodes) > 50000 {
 				return errors.New("source exceeds 50000 normalized nodes")
 			}
 		}
@@ -100,13 +112,9 @@ func LoadSource(ctx context.Context, source string, client *http.Client, emit fu
 		}
 		sort.Strings(providerNames)
 		for _, name := range providerNames {
-			address := decoded.Providers[name]
-			if parent, err := url.Parse(source); err == nil && parent.Host != "" {
-				relative, e := url.Parse(address)
-				if e != nil {
-					return errors.New("invalid provider URL")
-				}
-				address = parent.ResolveReference(relative).String()
+			address, err := resolveProviderAddress(source, decoded.Providers[name])
+			if err != nil {
+				return err
 			}
 			if err = load(address, depth+1); err != nil {
 				return err
@@ -117,8 +125,19 @@ func LoadSource(ctx context.Context, source string, client *http.Client, emit fu
 	if err := load(source, 0); err != nil {
 		return err
 	}
-	if len(all) == 0 {
+	if len(rawNodes) == 0 {
 		return errors.New("source contains no nodes")
+	}
+	if err := model.ResolveDependencies(rawNodes); err != nil {
+		return err
+	}
+	collected := make(map[string]bool, len(rawNodes))
+	all := make([]model.Node, 0, len(rawNodes))
+	for _, node := range rawNodes {
+		if !collected[node.Key] {
+			all = append(all, node)
+			collected[node.Key] = true
+		}
 	}
 	if err := model.ValidateDependencies(all); err != nil {
 		return err

@@ -43,6 +43,16 @@ func TestGeneralDownloadReuseKeepsClockAndDefinition(t *testing.T) {
 	if _, _, ok = reusableDownload(n, p); ok {
 		t.Fatal("different measurement definition reused")
 	}
+	p.DownloadBytes--
+	p.GeneralEvidence = nil
+	other, _ := codec.NewNode(map[string]any{"type": "http", "server": "other.invalid", "port": 443}, model.ClashYAML)
+	p.GeneralEvidenceByKey = map[string]model.Report{n.Key: r}
+	if _, clock, ok = reusableDownload(n, p); !ok || !clock.Equal(r.GeneralMeasuredAt) {
+		t.Fatal("GeneralEvidenceByKey not retained for matching key")
+	}
+	if _, _, ok = reusableDownload(other, p); ok {
+		t.Fatal("GeneralEvidenceByKey leaked to non-matching key")
+	}
 }
 
 // A fresh path failure must veto cached success, including a partial health run.

@@ -63,6 +63,23 @@ func normalizeURIConfig(u *url.URL, c map[string]any) error {
 		}
 		c["disable-sni"] = enabled
 	}
+	if kind == "anytls" {
+		if u.User != nil {
+			if pass, hasPass := u.User.Password(); hasPass && u.User.Username() != pass {
+				return errors.New("AnyTLS URI cannot preserve distinct username and password")
+			}
+		}
+		username, _ := c["username"].(string)
+		password, _ := c["password"].(string)
+		if password == "" && username != "" {
+			c["password"] = username
+			password = username
+		}
+		if username != "" && username != password {
+			return errors.New("AnyTLS URI cannot preserve distinct username and password")
+		}
+		delete(c, "username")
+	}
 	if kind == "ss" {
 		plugin, opts, err := decodeSSPluginURI(u)
 		if err != nil {
@@ -175,9 +192,17 @@ func normalizeURIConfig(u *url.URL, c map[string]any) error {
 			switch c["network"] {
 			case "http":
 				o, _ := c["http-opts"].(map[string]any)
+				if o == nil {
+					o = map[string]any{}
+					c["http-opts"] = o
+				}
 				o["headers"] = map[string]any{"Host": strings.Split(host, ",")}
 			case "h2":
 				o, _ := c["h2-opts"].(map[string]any)
+				if o == nil {
+					o = map[string]any{}
+					c["h2-opts"] = o
+				}
 				o["host"] = strings.Split(host, ",")
 			}
 		}

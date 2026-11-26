@@ -16,7 +16,13 @@ func minTimeEvidence(a, b time.Time) time.Time {
 
 // Reuse only the bounded download stage; health and all AI streams still run.
 func reusableDownload(node model.Node, plan model.Plan) (model.Metrics, time.Time, bool) {
-	r := plan.GeneralEvidence
+	var r *model.Report
+	if byKey, ok := plan.GeneralEvidenceByKey[node.Key]; ok {
+		candidate := byKey
+		r = &candidate
+	} else {
+		r = plan.GeneralEvidence
+	}
 	// Services and IP providers run serially before the three parallel streams.
 	remaining := plan.AI.Duration + 20*time.Second + time.Duration(len(plan.ServiceURLs)+len(plan.IPProviders)+1)*plan.ProbeTimeout
 	if plan.Profile != "ai" || r == nil || r.Profile != "general" || r.NodeKey != node.Key || r.ConfigRevision != node.Revision || r.Core != plan.Core || r.WorkerID != plan.WorkerID || r.Environment != plan.Environment || r.Status != model.Pass || r.Cached || r.InfrastructureFailure || r.GeneralMeasuredAt.IsZero() || !time.Now().Add(remaining).Before(r.FreshUntil) || !time.Now().Before(r.GeneralMeasuredAt.Add(24*time.Hour)) {

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -85,14 +86,17 @@ func loadSources(ctx context.Context, requests []SourceRequest, client *http.Cli
 			if err := ctx.Err(); err != nil {
 				return err
 			}
+			if !request.AllowLocalFiles && !isRemoteHTTPURL(address) && !isInlineOrDataSource(address) {
+				return errors.New("local source files are disabled")
+			}
+			if !isRemoteHTTPURL(address) && !isInlineOrDataSource(address) {
+				address = filepath.Clean(address)
+			}
 			if depth > 8 || visited[address] {
 				return errors.New("provider depth or cycle limit exceeded")
 			}
 			visited[address] = true
 			defer delete(visited, address)
-			if !request.AllowLocalFiles && !strings.HasPrefix(address, "http://") && !strings.HasPrefix(address, "https://") && !strings.HasPrefix(address, "data:") && !strings.HasPrefix(address, "inline:") {
-				return errors.New("local source files are disabled")
-			}
 			content, err := readSourceContent(ctx, address, c)
 			totalBytes += len(content)
 			result.Bytes += len(content)
@@ -112,16 +116,7 @@ func loadSources(ctx context.Context, requests []SourceRequest, client *http.Cli
 			}
 			sort.Strings(names)
 			for childIndex, name := range names {
-				child := providers[name]
-				var childErr error
-				if parent, e := url.Parse(address); e == nil && parent.Host != "" {
-					relative, e := url.Parse(child)
-					if e != nil {
-						childErr = errors.New("invalid provider URL")
-					} else {
-						child = parent.ResolveReference(relative).String()
-					}
-				}
+				child, childErr := resolveProviderAddress(address, providers[name])
 				childPath := fmt.Sprintf("%s/%d", path, childIndex)
 				start, offset, before := len(spool.slots), spool.bytes, spool.summary
 				if childErr == nil {
@@ -157,6 +152,49 @@ func loadSources(ctx context.Context, requests []SourceRequest, client *http.Cli
 		spool.summary.Sources = append(spool.summary.Sources, result)
 	}
 	return spool.finish(ctx, emit, allowEmpty)
+}
+
+func isRemoteHTTPURL(address string) bool {
+	return strings.HasPrefix(address, "http://") || strings.HasPrefix(address, "https://")
+}
+
+func isInlineOrDataSource(address string) bool {
+	return strings.HasPrefix(address, "inline:") || strings.HasPrefix(address, "data:")
+}
+
+func resolveProviderAddress(parentAddress, child string) (string, error) {
+	child = strings.TrimSpace(child)
+	if child == "" {
+		return "", errors.New("invalid provider URL")
+	}
+	if isRemoteHTTPURL(parentAddress) {
+		parent, err := url.Parse(parentAddress)
+		if err != nil || parent.Host == "" {
+			return "", errors.New("invalid source URL")
+		}
+		relative, err := url.Parse(child)
+		if err != nil {
+			return "", errors.New("invalid provider URL")
+		}
+		resolved := parent.ResolveReference(relative)
+		if (resolved.Scheme != "http" && resolved.Scheme != "https") || resolved.Host == "" {
+			return "", errors.New("remote provider URL must use http or https")
+		}
+		return resolved.String(), nil
+	}
+	if isInlineOrDataSource(parentAddress) {
+		return child, nil
+	}
+	if isRemoteHTTPURL(child) || isInlineOrDataSource(child) {
+		return child, nil
+	}
+	if u, err := url.Parse(child); err == nil && u.Scheme != "" && len(u.Scheme) > 1 {
+		return "", errors.New("unsupported provider URL scheme")
+	}
+	if filepath.IsAbs(child) {
+		return filepath.Clean(child), nil
+	}
+	return filepath.Join(filepath.Dir(parentAddress), child), nil
 }
 
 func fatalSourceError(ctx context.Context, err error) bool {

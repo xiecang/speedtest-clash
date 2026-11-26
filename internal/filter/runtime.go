@@ -27,6 +27,8 @@ var compilationCache = sync.OnceValue(wazero.NewCompilationCache)
 var machines = make(chan *machine, 2)
 var slots = make(chan struct{}, 2)
 
+var errJSException = errors.New("invalid filter expression or filter resource limit exceeded")
+
 type machine struct {
 	runtime wazero.Runtime
 	module  api.Module
@@ -56,7 +58,11 @@ func runJS(ctx context.Context, script string) (string, error) {
 	defer cancel()
 	result, err := m.eval(callCtx, script)
 	if err != nil {
-		// Cancellation closes the module. Never call JS destructors on it.
+		if errors.Is(err, errJSException) && callCtx.Err() == nil {
+			machines <- m
+			return "", err
+		}
+		// Cancellation or WASM failure closes the module. Never call JS destructors on it.
 		m.runtime.Close(context.Background())
 		return "", err
 	}
@@ -158,8 +164,29 @@ func (m *machine) eval(ctx context.Context, script string) (string, error) {
 		return "", err
 	}
 	if hasException != 0 {
+		if ctx.Err() != nil {
+			return "", ctx.Err()
+		}
+		exc, err := m.call(ctx, "JS_GetException", m.js)
+		if err != nil {
+			return "", err
+		}
+		if _, err = m.call(ctx, "QJS_FreeValue", m.js, exc); err != nil {
+			return "", err
+		}
+		if _, err = m.call(ctx, "QJS_FreeValue", m.js, value); err != nil {
+			return "", err
+		}
+		for _, p := range []uint64{code, file, option} {
+			if _, err = m.call(ctx, "free", p); err != nil {
+				return "", err
+			}
+		}
+		if ctx.Err() != nil {
+			return "", ctx.Err()
+		}
 		// Do not expose expression contents or node credentials in diagnostics.
-		return "", errors.New("invalid filter expression or filter resource limit exceeded")
+		return "", errJSException
 	}
 	text, err := m.stringValue(ctx, value)
 	if err != nil {

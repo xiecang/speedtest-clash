@@ -59,13 +59,28 @@ func TestRoutingPredicatesValidateNativeSingBox(t *testing.T) {
 	if _, err = nq.ConvertRule("UNKNOWN,example.com,DIRECT"); err == nil {
 		t.Fatal("unsupported predicate accepted")
 	}
+	for _, extraRule := range []string{"NOT,((DOMAIN,example.com)),REJECT", "GEOIP,cn,DIRECT"} {
+		if _, err = nq.ConvertRule(extraRule); err != nil {
+			t.Fatalf("ConvertRule(%q) failed: %v", extraRule, err)
+		}
+	}
 }
 
 func TestURIFormatsCredentialsAndVerifiedTLS(t *testing.T) {
-	for _, line := range []string{"https://user:p%40ss@example.invalid:443#https", "socks5+tls://user:p%3Ass@example.invalid:443#socks", "hy2://password@example.invalid:443#hy2", "trojan://password@example.invalid:443#trojan"} {
+	vmessJSON := `{"v":"2","ps":"vmess","add":"example.invalid","port":443,"id":"e28783bb-5a3f-4b0b-8472-692fa8f9f51b","aid":0,"scy":"auto","net":"ws","type":"none","host":"example.invalid","path":"/ws","tls":"tls","sni":"example.invalid"}`
+	vmessURI := "vmess://eyJ2IjoiMiIsInBzIjoidm1lc3MiLCJhZGQiOiJleGFtcGxlLmludmFsaWQiLCJwb3J0Ijo0NDMsImlkIjoiZTI4NzgzYmItNWEzZi00YjBiLTg0NzItNjkyZmE4ZjlmNTFiIiwiYWlkIjowLCJzY3kiOiJhdXRvIiwibmV0Ijoid3MiLCJ0eXBlIjoibm9uZSIsImhvc3QiOiJleGFtcGxlLmludmFsaWQiLCJwYXRoIjoiL3dzIiwidGxzIjoidGxzIiwic25pIjoiZXhhbXBsZS5pbnZhbGlkIn0="
+	_ = vmessJSON
+	for _, line := range []string{
+		"https://user:p%40ss@example.invalid:443#https",
+		"socks5+tls://user:p%3Ass@example.invalid:443#socks",
+		"hy2://password@example.invalid:443#hy2",
+		"trojan://password@example.invalid:443#trojan",
+		"anytls://password@example.invalid:443?sni=example.invalid#anytls",
+		vmessURI,
+	} {
 		decoded, err := nq.Decode([]byte(line))
 		if err != nil || len(decoded.Nodes) != 1 {
-			t.Fatalf("decode protocol failed %v", err)
+			t.Fatalf("decode protocol failed (%s): %v", line, err)
 		}
 		node := decoded.Nodes[0]
 		if node.Config["skip-cert-verify"] == true {
@@ -73,14 +88,23 @@ func TestURIFormatsCredentialsAndVerifiedTLS(t *testing.T) {
 		}
 		encoded, err := nq.Encode([]nq.Node{node}, nq.URI)
 		if err != nil {
-			t.Fatal(err)
+			t.Fatalf("encode URI failed (%s): %v", line, err)
 		}
 		roundtrip, err := nq.Decode(encoded)
 		if err != nil || len(roundtrip.Nodes) != 1 {
-			t.Fatal("URI roundtrip failed")
+			t.Fatalf("URI roundtrip failed (%s): %v", line, err)
 		}
-		if roundtrip.Nodes[0].Config["password"] != node.Config["password"] {
-			t.Fatal("credentials corrupted on URI roundtrip")
+		if roundtrip.Nodes[0].Config["password"] != node.Config["password"] || roundtrip.Nodes[0].Key != node.Key {
+			t.Fatalf("credentials or identity corrupted on URI roundtrip (%s)", line)
+		}
+		if !strings.HasPrefix(line, "socks5+tls://") {
+			singboxOut, err := nq.Encode([]nq.Node{node}, nq.SingBoxJSON)
+			if err != nil {
+				t.Fatalf("encode SingBoxJSON failed (%s): %v", line, err)
+			}
+			if err = nq.CheckSingBox(context.Background(), singboxOut); err != nil {
+				t.Fatalf("CheckSingBox failed (%s): %v", line, err)
+			}
 		}
 	}
 }

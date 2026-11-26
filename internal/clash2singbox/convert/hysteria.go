@@ -75,6 +75,9 @@ func hysteria(p *clash.Proxies, s *singbox.SingBoxOut) error {
 func hysteia2(p *clash.Proxies, s *singbox.SingBoxOut, v model.SingBoxVer) ([]singbox.SingBoxOut, error) {
 	p.Tls = true
 	tls(p, s)
+	if p.Port == "" && p.Ports == "" {
+		return nil, fmt.Errorf("hysteia2: %w", ErrNotSupportType)
+	}
 
 	if p.Ports != "" {
 		if v >= model.SING112 {

@@ -21,6 +21,7 @@ func queryIP(ctx context.Context, client *http.Client, plan model.Plan) []model.
 		return []model.IPResult{{Provider: "unconfigured", Status: model.Unknown, MeasuredAt: time.Now()}}
 	}
 	var exit string
+	var exitFamily int
 	if plan.ExitIPURL != "" {
 		func() {
 			ctx, cancel := context.WithTimeout(ctx, plan.ProbeTimeout)
@@ -40,34 +41,38 @@ func queryIP(ctx context.Context, client *http.Client, plan model.Plan) []model.
 			if response.StatusCode == 200 && json.NewDecoder(io.LimitReader(response.Body, 1024)).Decode(&data) == nil {
 				if address, err := netip.ParseAddr(data.IP); err == nil && address.IsGlobalUnicast() && !address.IsPrivate() {
 					exit = address.String()
+					exitFamily = 6
+					if address.Is4() {
+						exitFamily = 4
+					}
 				}
 			}
 		}()
 	}
-	var results []model.IPResult
+	results := make([]model.IPResult, 0, len(plan.IPProviders))
+	fresh := make([]bool, 0, len(plan.IPProviders))
 	for provider, address := range plan.IPProviders {
 		revision := fmt.Sprintf("%x", sha256.Sum256([]byte("ip-check-v1\x00"+address)))
 		result := model.IPResult{CheckRevision: revision, Provider: provider, Status: model.Unknown, MeasuredAt: time.Now()}
 		if exit != "" && plan.LookupIP != nil {
-			family := 6
-			address, _ := netip.ParseAddr(exit)
-			if address.Is4() {
-				family = 4
-			}
-			cached, ok, err := plan.LookupIP(ctx, exit, family, provider+"@"+revision)
-			if err == nil && ok && cached.CheckRevision == revision && cached.Provider == provider && cached.IP == exit && cached.Family == family && cached.Status == model.Pass && cached.ExpiresAt.After(time.Now()) {
+			cached, ok, err := plan.LookupIP(ctx, exit, exitFamily, provider+"@"+revision)
+			if err == nil && ok && cached.CheckRevision == revision && cached.Provider == provider && cached.IP == exit && cached.Family == exitFamily && cached.Status == model.Pass && cached.ExpiresAt.After(time.Now()) {
 				results = append(results, cached)
+				fresh = append(fresh, false)
 				continue
 			}
 		}
-		if strings.Contains(address, "{ip}") {
+		usedTemplate := strings.Contains(address, "{ip}")
+		if usedTemplate {
 			if exit == "" {
 				results = append(results, result)
+				fresh = append(fresh, false)
 				continue
 			}
 			address = strings.ReplaceAll(address, "{ip}", url.QueryEscape(exit))
 		}
 		result.ExpiresAt = result.MeasuredAt.Add(7 * 24 * time.Hour)
+		isFreshPass := false
 		func() {
 			ctx, cancel := context.WithTimeout(ctx, plan.ProbeTimeout)
 			defer cancel()
@@ -138,32 +143,43 @@ func queryIP(ctx context.Context, client *http.Client, plan model.Plan) []model.
 				result.Reputation = data.Reputation
 				result.Confidence = data.Confidence
 			}
-			if exit != "" && result.IP != exit {
+			if exit != "" && (usedTemplate || result.Family == exitFamily) && result.IP != exit {
 				return
 			}
 			result.Status = model.Pass
-			if plan.SaveIP != nil {
-				if err := plan.SaveIP(ctx, result); err != nil {
-					result.Status = model.Unknown
-				}
-			}
+			isFreshPass = true
 		}()
 		results = append(results, result)
+		fresh = append(fresh, isFreshPass)
 	}
-	// Providers queried through the same path must agree on the observed exit.
-	var observed string
+	// Providers queried through the same path must agree on the observed exit per address family.
+	observedByFamily := make(map[int]string, 2)
+	conflict := false
 	for _, result := range results {
 		if result.Status == model.Pass {
-			if observed == "" {
-				observed = result.IP
-			} else if result.IP != observed {
-				for i := range results {
-					results[i].Status = model.Unknown
-					results[i].Conflict = true
-					results[i].Confidence = 0
-					results[i].Reputation = nil
-				}
+			if prev, ok := observedByFamily[result.Family]; !ok {
+				observedByFamily[result.Family] = result.IP
+			} else if result.IP != prev {
+				conflict = true
 				break
+			}
+		}
+	}
+	if conflict {
+		for i := range results {
+			results[i].Status = model.Unknown
+			results[i].Conflict = true
+			results[i].Confidence = 0
+			results[i].Reputation = nil
+		}
+		return results
+	}
+	if plan.SaveIP != nil {
+		for i := range results {
+			if fresh[i] && results[i].Status == model.Pass {
+				if err := plan.SaveIP(ctx, results[i]); err != nil {
+					results[i].Status = model.Unknown
+				}
 			}
 		}
 	}

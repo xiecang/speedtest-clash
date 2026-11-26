@@ -6,6 +6,7 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"fmt"
+	"math/rand/v2"
 	"net/http"
 	"strconv"
 	"strings"
@@ -14,6 +15,15 @@ import (
 	"github.com/coder/websocket"
 	"github.com/xiecang/node-quality/v2/internal/model"
 )
+
+var downloadPayload [32 << 10]byte
+
+func init() {
+	var seed [32]byte
+	copy(seed[:], "node-quality-v2-download-payload")
+	rng := rand.NewChaCha8(seed)
+	_, _ = rng.Read(downloadPayload[:])
+}
 
 type ProbeOptions struct {
 	Token            string
@@ -50,16 +60,15 @@ func ProbeHandler(options ProbeOptions) http.Handler {
 		w.Header().Set("Content-Type", "application/octet-stream")
 		w.Header().Set("Content-Length", strconv.FormatInt(n, 10))
 		w.Header().Set("Cache-Control", "no-store")
-		buffer := make([]byte, 32<<10)
 		for n > 0 {
 			if r.Context().Err() != nil {
 				return
 			}
-			chunk := int64(len(buffer))
+			chunk := int64(len(downloadPayload))
 			if n < chunk {
 				chunk = n
 			}
-			written, e := w.Write(buffer[:chunk])
+			written, e := w.Write(downloadPayload[:chunk])
 			if e != nil || written == 0 {
 				return
 			}
@@ -121,8 +130,8 @@ func ProbeHandler(options ProbeOptions) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Node-Quality-Probe", "2")
 		if options.Token != "" {
-			token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-			if subtle.ConstantTimeCompare([]byte(token), []byte(options.Token)) != 1 {
+			token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+			if !ok || subtle.ConstantTimeCompare([]byte(token), []byte(options.Token)) != 1 {
 				http.Error(w, "unauthorized", http.StatusUnauthorized)
 				return
 			}
@@ -152,16 +161,25 @@ func emitStream(ctx context.Context, duration, interval time.Duration, send func
 	end := started.Add(duration)
 	var sequence int64
 	idleSent := false
+	resumedSent := false
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
 		now := time.Now()
 		if !now.Before(end) {
+			if idleSent && !resumedSent {
+				sequence++
+				if err := send(model.StreamFrame{Kind: "data", Sequence: sequence}); err != nil {
+					return err
+				}
+				resumedSent = true
+			}
 			return send(model.StreamFrame{Kind: "done", Sequence: sequence})
 		}
 		if !now.Before(idleStart) && now.Before(idleEnd) {
 			if !idleSent {
-				if err := send(model.StreamFrame{Kind: "idle", Sequence: sequence, IdleMilliseconds: time.Until(idleEnd).Milliseconds()}); err != nil {
+				idleMS := max(int64(1), idleEnd.Sub(now).Milliseconds())
+				if err := send(model.StreamFrame{Kind: "idle", Sequence: sequence, IdleMilliseconds: idleMS}); err != nil {
 					return err
 				}
 				idleSent = true
@@ -170,6 +188,9 @@ func emitStream(ctx context.Context, duration, interval time.Duration, send func
 			sequence++
 			if err := send(model.StreamFrame{Kind: "data", Sequence: sequence}); err != nil {
 				return err
+			}
+			if idleSent {
+				resumedSent = true
 			}
 		}
 		select {

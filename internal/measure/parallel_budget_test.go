@@ -20,6 +20,7 @@ func TestEightNodesShareDownloadSlotsAndCancelledWaitReleases(t *testing.T) {
 	gate := make(chan struct{})
 	var requests atomic.Int64
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Node-Quality-Probe", "2")
 		requests.Add(1)
 		select {
 		case <-gate:

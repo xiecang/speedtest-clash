@@ -21,6 +21,7 @@ import (
 type Budget struct {
 	limiter        *rate.Limiter
 	bandwidth      chan struct{}
+	waitGate       chan struct{}
 	mu             sync.Mutex
 	credit         int
 	bytesPerSecond int64
@@ -54,9 +55,14 @@ func NewBudgetWithConcurrency(bytesPerSecond int64, nodes int) (*Budget, error) 
 }
 
 func newBudget(bytesPerSecond int64, nodes int) *Budget {
-	b := &Budget{bandwidth: make(chan struct{}, nodes), bytesPerSecond: bytesPerSecond}
+	b := &Budget{
+		bandwidth:      make(chan struct{}, nodes),
+		waitGate:       make(chan struct{}, 1),
+		bytesPerSecond: bytesPerSecond,
+	}
 	if bytesPerSecond > 0 {
-		b.limiter = rate.NewLimiter(rate.Limit(bytesPerSecond), 32<<10)
+		burst := min(int64(2<<20), max(int64(32<<10), bytesPerSecond/20))
+		b.limiter = rate.NewLimiter(rate.Limit(bytesPerSecond), int(burst))
 	}
 	return b
 }
@@ -67,32 +73,51 @@ func (b *Budget) take(ctx context.Context, n int) (time.Duration, error) {
 	if b.limiter == nil {
 		return 0, ctx.Err()
 	}
-	var waited time.Duration
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	b.mu.Lock()
+	now := time.Now()
+	b.capCredit(now)
+	prepaid := min(n, b.credit)
+	if b.limiter.AllowN(now, n-prepaid) {
+		b.credit -= prepaid
+		b.mu.Unlock()
+		return 0, nil
+	}
+	b.mu.Unlock()
+
+	waitStart := time.Now()
+	select {
+	case b.waitGate <- struct{}{}:
+	case <-ctx.Done():
+		return time.Since(waitStart), ctx.Err()
+	}
+	defer func() { <-b.waitGate }()
+
 	for {
 		if err := ctx.Err(); err != nil {
-			return waited, err
+			return time.Since(waitStart), err
 		}
 		b.mu.Lock()
-		now := time.Now()
+		now = time.Now()
 		b.capCredit(now)
-		prepaid := min(n, b.credit)
+		prepaid = min(n, b.credit)
 		if b.limiter.AllowN(now, n-prepaid) {
 			b.credit -= prepaid
 			b.mu.Unlock()
-			return waited, nil
+			return time.Since(waitStart), nil
 		}
 		// No future reservations: cancelling one stream cannot leave another stream's
 		// appointment as debt for the next node. All read permits are charged now.
 		delay := time.Duration(float64(n-prepaid-int(b.limiter.TokensAt(now))) / float64(b.limiter.Limit()) * float64(time.Second))
 		b.mu.Unlock()
-		started := time.Now()
 		timer := time.NewTimer(max(time.Microsecond, delay))
 		select {
 		case <-timer.C:
-			waited += time.Since(started)
 		case <-ctx.Done():
 			timer.Stop()
-			return waited + time.Since(started), ctx.Err()
+			return time.Since(waitStart), ctx.Err()
 		}
 	}
 }
@@ -188,6 +213,7 @@ func measureDownload(ctx context.Context, client *http.Client, plan model.Plan, 
 	metrics := model.Metrics{BandwidthQueueWait: started.Sub(queuedAt), DownloadNodeConcurrency: cap(budget.bandwidth)}
 	var failures []error
 	var headers []time.Duration
+	validProbe := false
 	for i := 0; i < plan.DownloadConcurrency; i++ {
 		quota := plan.DownloadBytes / int64(plan.DownloadConcurrency)
 		if int64(i) < plan.DownloadBytes%int64(plan.DownloadConcurrency) {
@@ -214,16 +240,24 @@ func measureDownload(ctx context.Context, client *http.Client, plan model.Plan, 
 			ttfb := time.Since(headerStarted)
 			var count int64
 			var wait time.Duration
+			responseValid := false
 			if err == nil {
-				if response.StatusCode != http.StatusOK {
+				probeSig := response.Header.Get("X-Node-Quality-Probe") == "2"
+				if response.StatusCode == http.StatusProxyAuthRequired && !probeSig {
+					err = errNodeAuthRequired
+				} else if response.StatusCode != http.StatusOK {
 					err = &probeHTTPError{status: response.StatusCode}
+				} else if !probeSig {
+					err = errInvalidProbeSignature
 				} else {
+					responseValid = true
 					count, wait, err = copyDownload(sampleCtx, response.Body, quota, budget)
 				}
 				response.Body.Close()
 			}
 			mu.Lock()
-			if response != nil && response.StatusCode == http.StatusOK {
+			if responseValid {
+				validProbe = true
 				headers = append(headers, ttfb)
 				if wasReused {
 					metrics.DownloadReusedHeaderSamples++
@@ -241,6 +275,7 @@ func measureDownload(ctx context.Context, client *http.Client, plan model.Plan, 
 		}()
 	}
 	wg.Wait()
+	_ = validProbe
 	metrics.DownloadDuration = time.Since(started)
 	metrics.DownloadEndReason = "error"
 	if len(failures) == 0 && ctx.Err() == nil {

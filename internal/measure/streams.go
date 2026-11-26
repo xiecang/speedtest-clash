@@ -63,11 +63,18 @@ func measureStream(parent context.Context, dial model.DialContext, plan model.Pl
 		}
 		connection, response, err := websocket.Dial(ctx, address, &websocket.DialOptions{HTTPClient: client, HTTPHeader: headers, CompressionMode: websocket.CompressionDisabled})
 		if err != nil {
-			if response != nil && response.StatusCode != http.StatusSwitchingProtocols {
+			if response != nil && response.StatusCode == http.StatusProxyAuthRequired && response.Header.Get("X-Node-Quality-Probe") != "2" {
+				setStreamFailure(&result, errNodeAuthRequired, parent, "node_auth_required", false)
+			} else if response != nil && response.StatusCode != http.StatusSwitchingProtocols {
 				setStreamFailure(&result, nil, parent, fmt.Sprintf("probe_http_%d", response.StatusCode), true)
 			} else {
 				setStreamFailure(&result, err, parent, "ws_connect", false)
 			}
+			return
+		}
+		if response == nil || response.Header.Get("X-Node-Quality-Probe") != "2" {
+			connection.CloseNow()
+			setStreamFailure(&result, errInvalidProbeSignature, parent, "invalid_probe_signature", false)
 			return
 		}
 		connection.SetReadLimit(4096)
@@ -93,19 +100,30 @@ func measureStream(parent context.Context, dial model.DialContext, plan model.Pl
 			return
 		}
 		closeStream = func() { response.Body.Close() }
+		probeSig := response.Header.Get("X-Node-Quality-Probe") == "2"
+		if response.StatusCode == http.StatusProxyAuthRequired && !probeSig {
+			closeStream()
+			setStreamFailure(&result, errNodeAuthRequired, parent, "node_auth_required", false)
+			return
+		}
 		if response.StatusCode != http.StatusOK {
 			closeStream()
 			setStreamFailure(&result, nil, parent, fmt.Sprintf("probe_http_%d", response.StatusCode), true)
 			return
 		}
+		if !probeSig {
+			closeStream()
+			setStreamFailure(&result, errInvalidProbeSignature, parent, "invalid_probe_signature", false)
+			return
+		}
 		if protocol == "h2" && response.ProtoMajor != 2 {
 			closeStream()
-			setStreamFailure(&result, nil, parent, "h2_not_negotiated", true)
+			setStreamFailure(&result, nil, parent, "h2_not_negotiated", false)
 			return
 		}
 		if !strings.HasPrefix(response.Header.Get("Content-Type"), "text/event-stream") {
 			closeStream()
-			setStreamFailure(&result, nil, parent, "invalid_sse_type", true)
+			setStreamFailure(&result, nil, parent, "invalid_sse_type", false)
 			return
 		}
 		scanner := bufio.NewScanner(response.Body)
@@ -173,7 +191,7 @@ func measureStream(parent context.Context, dial model.DialContext, plan model.Pl
 		}
 		result.MaxActiveSilence = max(result.MaxActiveSilence, max(time.Duration(0), now.Sub(baseline)))
 		if result.MaxActiveSilence > 10*time.Second {
-			setStreamFailure(&result, nil, parent, "active_silence", true)
+			setStreamFailure(&result, nil, parent, "active_silence", false)
 			return
 		}
 		switch frame.Kind {
@@ -203,7 +221,7 @@ func measureStream(parent context.Context, dial model.DialContext, plan model.Pl
 				result.MaxActiveSilence = gap
 			}
 			if gap > 10*time.Second {
-				setStreamFailure(&result, nil, parent, "active_gap", true)
+				setStreamFailure(&result, nil, parent, "active_gap", false)
 				return
 			}
 			result.Frames++
@@ -226,17 +244,16 @@ func measureStream(parent context.Context, dial model.DialContext, plan model.Pl
 func setStreamFailure(result *model.StreamResult, err error, parent context.Context, code string, probe bool) {
 	result.Status = model.Unknown
 	result.FailureCode = code
-	if err != nil {
+	if err != nil && !errors.Is(err, errInvalidProbeSignature) {
 		result.FailureReason = streamFailureReason(err)
 	}
 	if probe {
 		result.FailureOrigin = model.FailureOriginProbe
 	} else {
-		result.FailureOrigin, _ = failureOrigin(err, parent)
-		if result.FailureOrigin == model.FailureOriginNode {
-			result.FailureCode = "node_auth_required"
-		} else if result.FailureOrigin == model.FailureOriginEnvironment {
-			_, result.FailureCode = failureOrigin(err, parent)
+		origin, originCode := failureOrigin(err, parent)
+		result.FailureOrigin = origin
+		if origin == model.FailureOriginNode || origin == model.FailureOriginEnvironment {
+			result.FailureCode = originCode
 		}
 	}
 	if result.FailureOrigin == model.FailureOriginNode {

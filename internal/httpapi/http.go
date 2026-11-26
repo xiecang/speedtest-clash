@@ -24,9 +24,12 @@ func Handler(plan model.Plan, budget *measure.Budget, probe probeapi.ProbeOption
 	mux.Handle("/api/v2/probe/", probeapi.ProbeHandler(probe))
 	protect := func(handler http.HandlerFunc) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
-			if probe.Token != "" && subtle.ConstantTimeCompare([]byte(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")), []byte(probe.Token)) != 1 {
-				http.Error(w, "unauthorized", 401)
-				return
+			if probe.Token != "" {
+				token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+				if !ok || subtle.ConstantTimeCompare([]byte(token), []byte(probe.Token)) != 1 {
+					http.Error(w, "unauthorized", http.StatusUnauthorized)
+					return
+				}
 			}
 			handler(w, r)
 		}

@@ -6,6 +6,7 @@ import (
 	"net/netip"
 	"reflect"
 	"strings"
+	"sync"
 
 	"github.com/xiecang/node-quality/v2/internal/clash2singbox/model/clash"
 	"github.com/xiecang/node-quality/v2/internal/model"
@@ -220,12 +221,24 @@ func checkClashFields(config map[string]any) error {
 	return nil
 }
 
-func checkFields(config map[string]any, model reflect.Type, path string) error {
-	fields := make(map[string]reflect.Type)
+var clashFieldTypeCache sync.Map
+
+func cachedStructFields(model reflect.Type) map[string]reflect.Type {
+	if cached, ok := clashFieldTypeCache.Load(model); ok {
+		return cached.(map[string]reflect.Type)
+	}
+	fields := make(map[string]reflect.Type, model.NumField())
 	for i := 0; i < model.NumField(); i++ {
 		f := model.Field(i)
-		fields[strings.Split(f.Tag.Get("yaml"), ",")[0]] = f.Type
+		tag, _, _ := strings.Cut(f.Tag.Get("yaml"), ",")
+		fields[tag] = f.Type
 	}
+	actual, _ := clashFieldTypeCache.LoadOrStore(model, fields)
+	return actual.(map[string]reflect.Type)
+}
+
+func checkFields(config map[string]any, model reflect.Type, path string) error {
+	fields := cachedStructFields(model)
 	for field, value := range config {
 		typ, ok := fields[field]
 		if !ok {
@@ -336,6 +349,16 @@ func emptyScalar(value any) bool {
 	case bool:
 		return !v
 	case int:
+		return v == 0
+	case int64:
+		return v == 0
+	case int32:
+		return v == 0
+	case uint:
+		return v == 0
+	case uint64:
+		return v == 0
+	case uint32:
 		return v == 0
 	case float64:
 		return v == 0

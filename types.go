@@ -17,6 +17,7 @@ var ErrNoNodes = source.ErrNoNodes
 type (
 	BuildInfo     = model.BuildInfo
 	Budget        = measure.Budget
+	BudgetStats   = measure.BudgetStats
 	ProbeOptions  = probe.ProbeOptions
 	Batch         = engine.Batch
 	SourceSummary = source.SourceSummary
@@ -27,9 +28,11 @@ type (
 	Core          = model.Core
 	Format        = model.Format
 	Node          = model.Node
+	RelayInfo     = model.RelayInfo
 	Diagnostic    = model.Diagnostic
 	DecodeResult  = model.DecodeResult
 	DialContext   = model.DialContext
+	StreamFrame   = model.StreamFrame
 	StreamResult  = model.StreamResult
 	ServiceResult = model.ServiceResult
 	IPResult      = model.IPResult

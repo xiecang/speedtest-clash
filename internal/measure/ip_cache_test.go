@@ -3,8 +3,10 @@ package measure
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -47,5 +49,88 @@ func TestIPCacheProviderURLAndCheckRevision(t *testing.T) {
 	}
 	if fourth := queryIP(context.Background(), server.Client(), p); requests.Load() != 3 || fourth[0].Status != model.Pass {
 		t.Fatal("obsolete checker reused", fourth, requests.Load())
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func jsonHTTPResponse(body string) *http.Response {
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     make(http.Header),
+		Body:       io.NopCloser(strings.NewReader(body)),
+	}
+}
+
+func TestIPDualStackDoesNotConflictAndConflictingProvidersDoNotSaveCache(t *testing.T) {
+	// Case 1: Dual-stack node where ExitIPURL sees IPv4 and one provider sees IPv6.
+	dualClient := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		switch r.URL.Host {
+		case "exit.example":
+			return jsonHTTPResponse(`{"ip":"8.8.8.8"}`), nil
+		case "v4.example":
+			return jsonHTTPResponse(`{"ip":"8.8.8.8","country_code":"US"}`), nil
+		case "v6.example":
+			return jsonHTTPResponse(`{"ip":"2606:4700:4700::1111","country_code":"US"}`), nil
+		default:
+			return &http.Response{StatusCode: http.StatusNotFound, Body: io.NopCloser(strings.NewReader(""))}, nil
+		}
+	})}
+	p := model.DefaultPlan()
+	p.ExitIPURL = "https://exit.example/ip"
+	p.IPProviders = map[string]string{
+		"p4": "https://v4.example/json/{ip}",
+		"p6": "https://v6.example/json",
+	}
+	var savedDual []model.IPResult
+	p.SaveIP = func(_ context.Context, r model.IPResult) error {
+		savedDual = append(savedDual, r)
+		return nil
+	}
+	dualResults := queryIP(context.Background(), dualClient, p)
+	if len(dualResults) != 2 {
+		t.Fatalf("expected 2 dual-stack results, got %+v", dualResults)
+	}
+	for _, r := range dualResults {
+		if r.Status != model.Pass || r.Conflict {
+			t.Fatalf("dual-stack result falsely marked failed/conflict: %+v", r)
+		}
+	}
+	if len(savedDual) != 2 {
+		t.Fatalf("expected both dual-stack providers saved after validation, got %d", len(savedDual))
+	}
+
+	// Case 2: Same-family conflict across two IPv4 providers must NOT invoke SaveIP.
+	conflictClient := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		switch r.URL.Host {
+		case "a.example":
+			return jsonHTTPResponse(`{"ip":"8.8.8.8","country_code":"US"}`), nil
+		case "b.example":
+			return jsonHTTPResponse(`{"ip":"1.1.1.1","country_code":"AU"}`), nil
+		default:
+			return &http.Response{StatusCode: http.StatusNotFound, Body: io.NopCloser(strings.NewReader(""))}, nil
+		}
+	})}
+	pConflict := model.DefaultPlan()
+	pConflict.ExitIPURL = ""
+	pConflict.IPProviders = map[string]string{
+		"a": "https://a.example/json",
+		"b": "https://b.example/json",
+	}
+	var savedConflicts int
+	pConflict.SaveIP = func(_ context.Context, _ model.IPResult) error {
+		savedConflicts++
+		return nil
+	}
+	conflictResults := queryIP(context.Background(), conflictClient, pConflict)
+	for _, r := range conflictResults {
+		if r.Status != model.Unknown || !r.Conflict {
+			t.Fatalf("expected conflict unknown status, got %+v", r)
+		}
+	}
+	if savedConflicts != 0 {
+		t.Fatalf("SaveIP called %d times on conflicting providers; want 0", savedConflicts)
 	}
 }

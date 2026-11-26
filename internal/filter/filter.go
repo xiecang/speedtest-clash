@@ -82,20 +82,36 @@ func (s *Selector) MatchDisplay(ctx context.Context, nodes []model.Node, display
 			if !result[i] || s == nil || s.expression == "" {
 				continue
 			}
-			object := model.CloneMap(n.Config)
-			object["name"] = n.Name
-			object["hidden"] = n.Hidden || n.Config["hidden"] == true
+			displayName := n.Name
 			if name, ok := display[n.Key]; ok {
-				object["name"] = name
+				displayName = name
 			}
+			hidden := n.Hidden || n.Config["hidden"] == true
+			var key [32]byte
+			tag, dialerProxy, detour, fastOK := canFastCache(n)
+			if fastOK {
+				key = fastResultKey(s.expression, n.Key, displayName, hidden, tag, dialerProxy, detour)
+				if value, ok := results.get(key); ok {
+					result[i] = value
+					continue
+				}
+			}
+			object := make(map[string]any, len(n.Config)+2)
+			for k, v := range n.Config {
+				object[k] = v
+			}
+			object["name"] = displayName
+			object["hidden"] = hidden
 			data, err := json.Marshal(object)
 			if err != nil || len(data)+2 > 1<<20 {
 				return nil, errors.New("filter batch exceeds JSON or 1MiB limit")
 			}
-			key := resultKey(s.expression, data)
-			if value, ok := results.get(key); ok {
-				result[i] = value
-				continue
+			if !fastOK {
+				key = resultKey(s.expression, data)
+				if value, ok := results.get(key); ok {
+					result[i] = value
+					continue
+				}
 			}
 			if bytes+len(data)+1 > 1<<20 {
 				if err = s.matchBatch(ctx, objects, indices, keys, result); err != nil {
@@ -114,6 +130,36 @@ func (s *Selector) MatchDisplay(ctx context.Context, nodes []model.Node, display
 		}
 	}
 	return result, nil
+}
+
+func canFastCache(n model.Node) (tag, dialerProxy, detour string, ok bool) {
+	if model.ValidateIdentity(n) != nil {
+		return "", "", "", false
+	}
+	for _, field := range []string{"speed", "delay", "latency", "tested_at", "updated_at", "date", "quality"} {
+		if _, exists := n.Config[field]; exists {
+			return "", "", "", false
+		}
+	}
+	if raw, exists := n.Config["tag"]; exists {
+		tag, ok = raw.(string)
+		if !ok {
+			return "", "", "", false
+		}
+	}
+	if raw, exists := n.Config["dialer-proxy"]; exists {
+		dialerProxy, ok = raw.(string)
+		if !ok {
+			return "", "", "", false
+		}
+	}
+	if raw, exists := n.Config["detour"]; exists {
+		detour, ok = raw.(string)
+		if !ok {
+			return "", "", "", false
+		}
+	}
+	return tag, dialerProxy, detour, true
 }
 
 func (s *Selector) matchBatch(ctx context.Context, objects []json.RawMessage, indices []int, keys [][32]byte, result []bool) error {

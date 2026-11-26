@@ -45,6 +45,7 @@ func TestStreamFailureDiagnosticsPreserveStrictCompletion(t *testing.T) {
 		for _, kind := range []string{"active", "idle", "resumed", "early_done"} {
 			t.Run(protocol+"/"+kind, func(t *testing.T) {
 				server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					w.Header().Set("X-Node-Quality-Probe", "2")
 					var send func(model.StreamFrame)
 					if protocol == "websocket" {
 						conn, err := websocket.Accept(w, r, nil)

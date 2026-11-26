@@ -48,7 +48,16 @@ func probeClient(dial model.DialContext, plan model.Plan, h2 bool) (*http.Client
 	if !h2 {
 		tlsConfig.NextProtos = []string{"http/1.1"}
 	}
-	transport := &http.Transport{DialContext: connect, TLSClientConfig: tlsConfig, ForceAttemptHTTP2: h2, DisableCompression: true, ResponseHeaderTimeout: plan.ProbeTimeout, TLSHandshakeTimeout: plan.ProbeTimeout, MaxIdleConnsPerHost: 5}
+	transport := &http.Transport{
+		DialContext:           connect,
+		TLSClientConfig:       tlsConfig,
+		ForceAttemptHTTP2:     h2,
+		DisableCompression:    true,
+		ResponseHeaderTimeout: plan.ProbeTimeout,
+		TLSHandshakeTimeout:   plan.ProbeTimeout,
+		IdleConnTimeout:       30 * time.Second,
+		MaxIdleConnsPerHost:   5,
+	}
 	if !h2 {
 		transport.TLSNextProto = make(map[string]func(string, *tls.Conn) http.RoundTripper)
 	}
@@ -76,12 +85,50 @@ func ValidatePlan(plan model.Plan) error {
 		return errors.New("invalid liveness limits")
 	}
 	if plan.Profile != "general" && plan.Profile != "ai" && plan.Profile != "availability" && plan.Profile != "services" {
-		return errors.New("profile must be general or ai")
+		return errors.New("profile must be general, ai, availability, or services")
 	}
 	if plan.Profile == "ai" && (plan.AI.Concurrency < 1 || plan.AI.Concurrency > 32 || plan.AI.Duration <= 0 || plan.AI.Duration > 10*time.Minute || plan.AI.Validity <= 0 || plan.AI.Validity > 6*time.Hour || plan.AI.CandidateLimit < 1 || plan.AI.CandidateLimit > 200 || plan.AI.RetestInterval <= 0) {
 		return errors.New("invalid AI limits")
 	}
 	return nil
+}
+
+type batchControl struct {
+	mu        sync.Mutex
+	inflight  chan struct{}
+	checkedAt time.Time
+	healthy   bool
+}
+
+func (c *batchControl) check(ctx context.Context, plan model.Plan) bool {
+	for {
+		c.mu.Lock()
+		if !c.checkedAt.IsZero() && time.Since(c.checkedAt) < time.Second {
+			ok := c.healthy
+			c.mu.Unlock()
+			return ok
+		}
+		if c.inflight == nil {
+			ch := make(chan struct{})
+			c.inflight = ch
+			c.mu.Unlock()
+			ok := probeControl(ctx, plan)
+			c.mu.Lock()
+			c.healthy = ok
+			c.checkedAt = time.Now()
+			c.inflight = nil
+			close(ch)
+			c.mu.Unlock()
+			return ok
+		}
+		wait := c.inflight
+		c.mu.Unlock()
+		select {
+		case <-wait:
+		case <-ctx.Done():
+			return false
+		}
+	}
 }
 
 // Evaluate runs bounded native-core measurements. A Budget must be shared by
@@ -113,8 +160,9 @@ func Evaluate(ctx context.Context, nodes []model.Node, plan model.Plan, budget *
 			return nil, errors.New("target is absent from dependency graph")
 		}
 	}
+	currentFilter := [3]string{plan.Filter, plan.NameRegexContain, plan.NameRegexNotContain}
 	selector := plan.TargetSelector
-	if selector == nil {
+	if selector == nil || (plan.PreparedFilter != [3]string{} && plan.PreparedFilter != currentFilter) || (!selector.Active() && currentFilter != [3]string{}) {
 		var err error
 		selector, err = filter.Compile(ctx, filter.Options{Filter: plan.Filter, NameRegexContain: plan.NameRegexContain, NameRegexNotContain: plan.NameRegexNotContain})
 		if err != nil {
@@ -135,10 +183,13 @@ func Evaluate(ctx context.Context, nodes []model.Node, plan model.Plan, budget *
 	if len(targets) == 0 {
 		return []model.Report{}, nil
 	}
+	if len(targets) > 1 {
+		plan.ServiceEvidence = nil
+	}
 	if plan.Profile == "ai" && len(targets) > plan.AI.CandidateLimit {
 		return nil, errors.New("AI candidate limit exceeded")
 	}
-	batch, err := engine.OpenBatch(ctx, nodes, plan.Core)
+	batch, err := engine.OpenBatch(ctx, model.DependencyClosure(targets, nodes), plan.Core)
 	if err != nil {
 		return nil, err
 	}
@@ -146,6 +197,10 @@ func Evaluate(ctx context.Context, nodes []model.Node, plan model.Plan, budget *
 	control := true
 	if plan.Profile != "services" {
 		control = probeControl(ctx, plan)
+	}
+	var rechecker batchControl
+	recheckControl := func(c context.Context) bool {
+		return rechecker.check(c, plan)
 	}
 
 	concurrency := plan.LivenessConcurrency
@@ -164,12 +219,14 @@ func Evaluate(ctx context.Context, nodes []model.Node, plan model.Plan, budget *
 				node := targets[index]
 				dial, e := batch.Dialer(node.Key)
 				if e != nil {
-					reports[index] = newReport(node, plan)
-					reports[index].FailureCode = capabilityFailureCode(e)
-					reports[index].CompletedAt = time.Now()
+					r := newReport(node, plan)
+					r.GeneralStatus = model.Unknown
+					r.FailureCode = capabilityFailureCode(e)
+					r.CompletedAt = time.Now()
+					reports[index] = r
 					continue
 				}
-				reports[index] = evaluateNode(ctx, node, dial, plan, budget, control)
+				reports[index] = evaluateNodeWithControl(ctx, node, dial, plan, budget, control, recheckControl)
 			}
 		}()
 	}
@@ -192,7 +249,7 @@ func newReport(node model.Node, plan model.Plan) model.Report {
 	if plan.Core == model.SingBox {
 		version = model.SingBoxVersion
 	}
-	return model.Report{SchemaVersion: model.SchemaVersion, MetricVersion: model.MetricVersion, NodeKey: node.Key, ConfigRevision: node.Revision, EvaluationRevision: PlanRevision(plan), WorkerID: plan.WorkerID, Environment: plan.Environment, Core: plan.Core, CoreVersion: version, Profile: plan.Profile, Status: model.Unknown, MeasuredAt: time.Now(), Services: make(map[string]model.ServiceResult)}
+	return model.Report{SchemaVersion: model.SchemaVersion, MetricVersion: model.MetricVersion, NodeKey: node.Key, ConfigRevision: node.Revision, EvaluationRevision: PlanRevision(plan), WorkerID: plan.WorkerID, Environment: plan.Environment, Core: plan.Core, CoreVersion: version, Profile: plan.Profile, Status: model.Unknown, GeneralStatus: model.Unknown, MeasuredAt: time.Now(), Services: make(map[string]model.ServiceResult)}
 }
 
 func probeControl(ctx context.Context, plan model.Plan) bool {
@@ -213,7 +270,13 @@ func probeControl(ctx context.Context, plan model.Plan) bool {
 	return response.StatusCode == http.StatusNoContent && response.Header.Get("X-Node-Quality-Probe") == "2"
 }
 
-func evaluateNode(ctx context.Context, node model.Node, dial model.DialContext, plan model.Plan, budget *Budget, control bool) (report model.Report) {
+func evaluateNode(ctx context.Context, node model.Node, dial model.DialContext, plan model.Plan, budget *Budget, control bool) model.Report {
+	return evaluateNodeWithControl(ctx, node, dial, plan, budget, control, func(c context.Context) bool {
+		return probeControl(c, plan)
+	})
+}
+
+func evaluateNodeWithControl(ctx context.Context, node model.Node, dial model.DialContext, plan model.Plan, budget *Budget, control bool, recheckControl func(context.Context) bool) (report model.Report) {
 	report = newReport(node, plan)
 	defer func() {
 		report.CompletedAt = time.Now()
@@ -235,8 +298,12 @@ func evaluateNode(ctx context.Context, node model.Node, dial model.DialContext, 
 	if plan.Profile == "services" {
 		report.Status = model.Pass
 		report.FreshUntil = time.Now().Add(2 * time.Hour)
+		serviceEvidence := plan.ServiceEvidenceByKey[node.Key]
+		if serviceEvidence == nil {
+			serviceEvidence = plan.ServiceEvidence
+		}
 		for name, check := range plan.ServiceChecks {
-			previous := plan.ServiceEvidence[name]
+			previous := serviceEvidence[name]
 			if previous.CheckRevision == ServiceCheckRevision(check) && !previous.MeasuredAt.IsZero() && time.Now().Before(previous.MeasuredAt.Add(2*time.Hour)) {
 				report.Services[name] = previous
 			} else {
@@ -267,9 +334,14 @@ func evaluateNode(ctx context.Context, node model.Node, dial model.DialContext, 
 			err = e
 			if e == nil {
 				response.Body.Close()
-				if response.StatusCode != http.StatusNoContent {
+				probeSig := response.Header.Get("X-Node-Quality-Probe") == "2"
+				if response.StatusCode == http.StatusProxyAuthRequired && !probeSig {
+					err = errNodeAuthRequired
+				} else if response.StatusCode != http.StatusNoContent {
 					err = &probeHTTPError{status: response.StatusCode}
 					healthHTTPStatus = response.StatusCode
+				} else if !probeSig {
+					err = errInvalidProbeSignature
 				} else {
 					if wasReused {
 						reused = append(reused, time.Since(started))
@@ -295,14 +367,18 @@ func evaluateNode(ctx context.Context, node model.Node, dial model.DialContext, 
 	report.Metrics.ReusedHealthMedian = median(reused)
 	if len(cold)+len(reused) == 0 {
 		report.FailureOrigin, report.FailureCode = failureOrigin(healthError, ctx)
-		if report.FailureOrigin != model.FailureOriginNode && ctx.Err() == nil && (healthHTTPStatus != 0 || !control || !probeControl(ctx, plan)) {
+		if report.FailureOrigin != model.FailureOriginNode && ctx.Err() == nil && (healthHTTPStatus != 0 || !control || !recheckControl(ctx)) {
 			report.FailureOrigin = model.FailureOriginProbe
 			report.FailureCode = "probe_unavailable"
 			if healthHTTPStatus != 0 {
 				report.FailureCode = fmt.Sprintf("probe_http_%d", healthHTTPStatus)
 			}
 		} else if report.FailureOrigin != model.FailureOriginNode && report.FailureCode == "" {
-			report.FailureCode = networkFailureCode(healthError, "unreachable")
+			if errors.Is(healthError, errInvalidProbeSignature) {
+				report.FailureCode = "invalid_probe_signature"
+			} else {
+				report.FailureCode = networkFailureCode(healthError, "unreachable")
+			}
 		}
 		report.Status = model.Unknown
 		if report.FailureOrigin == model.FailureOriginNode {
@@ -319,14 +395,18 @@ func evaluateNode(ctx context.Context, node model.Node, dial model.DialContext, 
 	}
 	if failed > 0 {
 		report.FailureOrigin, report.FailureCode = failureOrigin(healthError, ctx)
-		if report.FailureOrigin != model.FailureOriginNode && ctx.Err() == nil && (healthHTTPStatus != 0 || !control || !probeControl(ctx, plan)) {
+		if report.FailureOrigin != model.FailureOriginNode && ctx.Err() == nil && (healthHTTPStatus != 0 || !control || !recheckControl(ctx)) {
 			report.FailureOrigin = model.FailureOriginProbe
 			report.FailureCode = "probe_unavailable"
 			if healthHTTPStatus != 0 {
 				report.FailureCode = fmt.Sprintf("probe_http_%d", healthHTTPStatus)
 			}
 		} else if report.FailureOrigin != model.FailureOriginNode && report.FailureCode == "" {
-			report.FailureCode = "request_failures"
+			if errors.Is(healthError, errInvalidProbeSignature) {
+				report.FailureCode = "invalid_probe_signature"
+			} else {
+				report.FailureCode = "request_failures"
+			}
 		}
 		report.Status = model.Unknown
 		if report.FailureOrigin == model.FailureOriginNode {
@@ -359,14 +439,18 @@ func evaluateNode(ctx context.Context, node model.Node, dial model.DialContext, 
 	if err != nil {
 		report.FailureOrigin, report.FailureCode = failureOrigin(err, ctx)
 		if report.FailureCode == "" {
-			report.FailureCode = "download_incomplete"
+			if errors.Is(err, errInvalidProbeSignature) {
+				report.FailureCode = "invalid_probe_signature"
+			} else {
+				report.FailureCode = "download_incomplete"
+			}
 		}
 		var probeErr *probeHTTPError
 		if errors.As(err, &probeErr) {
 			report.FailureOrigin = model.FailureOriginProbe
 			report.FailureCode = fmt.Sprintf("probe_http_%d", probeErr.status)
 		}
-		if report.FailureOrigin != model.FailureOriginNode && ctx.Err() == nil && (!control || !probeControl(ctx, plan)) {
+		if report.FailureOrigin != model.FailureOriginNode && ctx.Err() == nil && (!control || !recheckControl(ctx)) {
 			report.FailureOrigin = model.FailureOriginProbe
 		}
 		report.Status = model.Unknown
@@ -386,24 +470,38 @@ func evaluateNode(ctx context.Context, node model.Node, dial model.DialContext, 
 	}
 	report.IP = queryIP(ctx, client, plan)
 	if plan.Profile == "ai" {
+		transport.CloseIdleConnections()
 		report.Streams = measureStreams(ctx, dial, plan)
 		report.FreshUntil = time.Now().Add(plan.AI.Validity)
+		streamRank := func(s model.StreamResult) int {
+			if s.Status == model.Fail {
+				return 4
+			}
+			if s.Status == model.Unknown {
+				if s.FailureOrigin == model.FailureOriginEnvironment || s.FailureOrigin == model.FailureOriginProbe {
+					return 3
+				}
+				return 2
+			}
+			return 1
+		}
+		bestRank := 1
 		for _, stream := range report.Streams {
-			if stream.Status == model.Fail || stream.Status == model.Unknown && report.Status == model.Pass {
+			if rank := streamRank(stream); rank > bestRank {
+				bestRank = rank
 				report.Status = stream.Status
 				report.FailureCode = stream.FailureCode
 				report.FailureOrigin = stream.FailureOrigin
 			}
 		}
-		if report.Status == model.Unknown && (report.FailureOrigin == model.FailureOriginEnvironment || report.FailureOrigin == model.FailureOriginProbe) {
-			report.InfrastructureFailure = true
-		}
-		if report.Status != model.Pass && report.FailureOrigin != model.FailureOriginNode && (!control || !probeControl(ctx, plan)) {
+		if report.Status != model.Pass && report.FailureOrigin != model.FailureOriginNode && ctx.Err() == nil && (!control || !recheckControl(ctx)) {
 			report.Status = model.Unknown
 			report.FailureOrigin = model.FailureOriginProbe
 			report.InfrastructureFailure = true
 		}
-
+		if report.Status == model.Unknown && (report.FailureOrigin == model.FailureOriginEnvironment || report.FailureOrigin == model.FailureOriginProbe) {
+			report.InfrastructureFailure = true
+		}
 	}
 	return
 }

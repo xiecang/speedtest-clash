@@ -53,6 +53,24 @@ func encodeURI(n model.Node) (string, error) {
 	default:
 		return "", fmt.Errorf("URI export unsupported for %s", typeName)
 	}
+	if typeName == "vmess" {
+		if raw, exists := c["xudp"]; exists {
+			enabled, ok := raw.(bool)
+			if !ok {
+				return "", errors.New("invalid xudp flag")
+			}
+			if !enabled {
+				return "", errors.New("VMess JSON URI cannot preserve explicit xudp disable")
+			}
+		}
+		if err := normalizePacketEncoding(c); err != nil {
+			return "", err
+		}
+		if pe, _ := c["packet-encoding"].(string); pe != "" && pe != "xudp" {
+			return "", fmt.Errorf("VMess JSON URI cannot preserve packet encoding %q", pe)
+		}
+		delete(c, "packet-encoding")
+	}
 	for field, value := range c {
 		if !strings.Contains(allowed, " "+field+" ") && !emptyScalar(value) && field != "udp" {
 			return "", fmt.Errorf("URI cannot preserve field %q", field)

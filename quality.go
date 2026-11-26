@@ -13,6 +13,9 @@ import (
 // Capabilities describes the embedded cores and enabled build features.
 func Capabilities() BuildInfo { return engine.Capabilities() }
 
+// RelayCapabilities reports protocol TCP/UDP relay capabilities for a node.
+func RelayCapabilities(node Node) RelayInfo { return engine.RelayCapabilities(node) }
+
 // NewBudget creates a bandwidth budget that callers can share across measurements.
 func NewBudget(bytesPerSecond int64) *Budget { return measure.NewBudget(bytesPerSecond) }
 

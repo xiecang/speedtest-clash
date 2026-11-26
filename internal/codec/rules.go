@@ -97,11 +97,37 @@ func splitRule(text string) ([]string, error) {
 	return parts, nil
 }
 
-func rulePredicate(text string) (map[string]any, error) {
-	text = strings.TrimSpace(text)
-	if strings.HasPrefix(text, "(") && strings.HasSuffix(text, ")") {
+func stripMatchingOuterParens(text string) string {
+	for {
+		text = strings.TrimSpace(text)
+		if len(text) < 2 || text[0] != '(' || text[len(text)-1] != ')' {
+			return text
+		}
+		depth := 0
+		matched := true
+		for i := 0; i < len(text)-1; i++ {
+			switch text[i] {
+			case '(':
+				depth++
+			case ')':
+				depth--
+				if depth <= 0 {
+					matched = false
+				}
+			}
+			if !matched {
+				break
+			}
+		}
+		if !matched || depth != 1 {
+			return text
+		}
 		text = text[1 : len(text)-1]
 	}
+}
+
+func rulePredicate(text string) (map[string]any, error) {
+	text = stripMatchingOuterParens(text)
 	parts, err := splitRule(text)
 	if err != nil || len(parts) < 2 {
 		return nil, errors.New("invalid rule predicate")
@@ -113,23 +139,24 @@ func rulePredicate(text string) (map[string]any, error) {
 	result := map[string]any{}
 	switch kind {
 	case "AND", "OR", "NOT":
-		children, err := splitRule(strings.TrimSuffix(strings.TrimPrefix(value, "("), ")"))
-		if err != nil {
-			return nil, err
+		inner := stripMatchingOuterParens(value)
+		children := []string{inner}
+		if strings.HasPrefix(inner, "(") {
+			children, err = splitRule(inner)
+			if err != nil {
+				return nil, err
+			}
 		}
-		nested := []map[string]any{}
-		if kind == "NOT" {
-			children = []string{value}
+		if kind == "NOT" && len(children) != 1 {
+			return nil, errors.New("NOT requires one predicate")
 		}
+		nested := make([]map[string]any, 0, len(children))
 		for _, child := range children {
 			predicate, err := rulePredicate(child)
 			if err != nil {
 				return nil, err
 			}
 			nested = append(nested, predicate)
-		}
-		if kind == "NOT" && len(nested) != 1 {
-			return nil, errors.New("NOT requires one predicate")
 		}
 		mode := "and"
 		if kind == "OR" {
@@ -187,6 +214,7 @@ func rulePredicate(text string) (map[string]any, error) {
 			result["ip_is_private"] = true
 			break
 		}
+		value = strings.ToUpper(value)
 		if len(value) != 2 || strings.IndexFunc(value, func(r rune) bool { return r < 'A' || r > 'Z' }) >= 0 {
 			return nil, errors.New("GEOIP requires an ISO country code")
 		}

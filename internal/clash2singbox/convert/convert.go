@@ -105,11 +105,13 @@ func comm(p *clash.Proxies) (*singbox.SingBoxOut, string, error) {
 	}
 	s.Tag = p.Name
 	s.Server = p.Server
-	port, err := strconv.Atoi(p.Port)
-	if err != nil {
-		return nil, "", fmt.Errorf("comm: %w", err)
+	if p.Port != "" || ((p.Type != "hysteria" && p.Type != "hysteria2") || p.Ports == "") {
+		port, err := strconv.Atoi(p.Port)
+		if err != nil {
+			return nil, "", fmt.Errorf("comm: %w", err)
+		}
+		s.ServerPort = port
 	}
-	s.ServerPort = port
 	s.Password = p.Password
 
 	if p.Smux.Enabled {

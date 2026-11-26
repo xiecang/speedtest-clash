@@ -5,10 +5,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
+	"os"
 	"sync"
 
 	mc "github.com/metacubex/mihomo/constant"
 	box "github.com/sagernet/sing-box"
+	"github.com/sagernet/sing-box/adapter"
 	"github.com/xiecang/node-quality/v2/internal/model"
 )
 
@@ -18,6 +21,7 @@ type Batch struct {
 	failures  map[string]error
 	proxies   []mc.Proxy
 	box       *box.Box
+	endpoints []adapter.Endpoint
 	closeOnce sync.Once
 	closeErr  error
 }
@@ -37,7 +41,7 @@ func OpenBatch(ctx context.Context, nodes []model.Node, core model.Core) (*Batch
 		err = fmt.Errorf("unsupported core %q", core)
 	}
 	if err != nil {
-		return nil, errors.Join(err, b.Close())
+		return nil, errors.Join(sanitizeEngineError(err), b.Close())
 	}
 	return b, nil
 }
@@ -58,11 +62,11 @@ func (b *Batch) Close() error {
 		return nil
 	}
 	b.closeOnce.Do(func() {
-		if b.box != nil {
-			b.closeErr = b.box.Close()
-		}
-		for _, p := range b.proxies {
-			b.closeErr = errors.Join(b.closeErr, p.Close())
+		b.closeErr = closeSingBox(b.box, b.endpoints)
+		for i := len(b.proxies) - 1; i >= 0; i-- {
+			if err := b.proxies[i].Close(); err != nil && !errors.Is(err, os.ErrClosed) && !errors.Is(err, net.ErrClosed) {
+				b.closeErr = errors.Join(b.closeErr, err)
+			}
 		}
 	})
 	return b.closeErr

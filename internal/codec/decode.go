@@ -16,6 +16,26 @@ import (
 const MaxSourceBytes = 16 << 20
 
 func Decode(content []byte) (model.DecodeResult, error) {
+	result, err := DecodeUnresolved(content)
+	if err != nil {
+		return result, err
+	}
+	if err := model.ResolveDependencies(result.Nodes); err != nil {
+		return result, err
+	}
+	seen := make(map[string]bool, len(result.Nodes))
+	unique := result.Nodes[:0]
+	for _, n := range result.Nodes {
+		if !seen[n.Key] {
+			unique = append(unique, n)
+			seen[n.Key] = true
+		}
+	}
+	result.Nodes = unique
+	return result, nil
+}
+
+func DecodeUnresolved(content []byte) (model.DecodeResult, error) {
 	result := model.DecodeResult{SchemaVersion: model.SchemaVersion, Nodes: []model.Node{}}
 	if len(content) > MaxSourceBytes {
 		return result, fmt.Errorf("source exceeds %d bytes", MaxSourceBytes)
@@ -97,18 +117,6 @@ func Decode(content []byte) (model.DecodeResult, error) {
 		}
 		result.Nodes = append(result.Nodes, node)
 	}
-	if err := model.ResolveDependencies(result.Nodes); err != nil {
-		return result, err
-	}
-	seen := make(map[string]bool)
-	unique := result.Nodes[:0]
-	for _, n := range result.Nodes {
-		if !seen[n.Key] {
-			unique = append(unique, n)
-			seen[n.Key] = true
-		}
-	}
-	result.Nodes = unique
 	if len(result.Nodes) == 0 && len(result.Providers) == 0 {
 		return result, errors.New("source contains no supported nodes")
 	}

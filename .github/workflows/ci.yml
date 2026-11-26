@@ -1,0 +1,25 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  GO_BUILD_TAGS: with_quic,with_utls,with_wireguard,with_gvisor,with_clash_api
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - name: Go vet
+        run: go vet -tags "${GO_BUILD_TAGS}" ./...
+      - name: Go test (-race)
+        run: go test -race -tags "${GO_BUILD_TAGS}" ./...

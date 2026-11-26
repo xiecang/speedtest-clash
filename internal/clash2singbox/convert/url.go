@@ -140,11 +140,13 @@ func parseTuic(u *url.URL) (clash.Proxies, error) {
 
 func parseHysteria2(u *url.URL) (clash.Proxies, error) {
 	p := clash.Proxies{
-		Name:     u.Fragment,
-		Type:     "hysteria2",
-		Server:   u.Hostname(),
-		Port:     u.Port(),
-		Password: u.User.Username(),
+		Name:   u.Fragment,
+		Type:   "hysteria2",
+		Server: u.Hostname(),
+		Port:   u.Port(),
+	}
+	if u.User != nil {
+		p.Password = u.User.Username()
 	}
 	q := u.Query()
 	if scv, ok := q["insecure"]; ok && len(scv) > 0 && scv[0] == "1" {
@@ -281,7 +283,9 @@ func parseVless(u *url.URL) (clash.Proxies, error) {
 		Name:   u.Fragment,
 		Server: u.Hostname(),
 		Port:   u.Port(),
-		Uuid:   u.User.String(),
+	}
+	if u.User != nil {
+		p.Uuid = u.User.String()
 	}
 	q := u.Query()
 	if security, ok := q["security"]; ok && len(security) > 0 && security[0] != "none" {
@@ -435,6 +439,9 @@ func parseVmess(s string) (clash.Proxies, error) {
 }
 
 func parseSs(u *url.URL) (clash.Proxies, error) {
+	if u.User == nil {
+		return clash.Proxies{}, fmt.Errorf("invalid ss link")
+	}
 	p := clash.Proxies{
 		Type:   "ss",
 		Server: u.Hostname(),
@@ -520,7 +527,9 @@ func parseAnytls(u *url.URL) (clash.Proxies, error) {
 		Server: u.Hostname(),
 		Port:   u.Port(),
 	}
-	p.Password = u.User.Username()
+	if u.User != nil {
+		p.Password = u.User.Username()
+	}
 	q := u.Query()
 
 	p.Servername = q.Get("sni")

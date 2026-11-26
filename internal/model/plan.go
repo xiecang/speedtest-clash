@@ -7,6 +7,12 @@ import (
 	"time"
 )
 
+type RelayInfo struct {
+	SupportsTCP bool `json:"supports_tcp" yaml:"supports_tcp"`
+	SupportsUDP bool `json:"supports_udp" yaml:"supports_udp"`
+	RequiresUDP bool `json:"requires_udp" yaml:"requires_udp"`
+}
+
 type ServiceCheck struct {
 	Kind string `json:"kind" yaml:"kind"`
 	URL  string `json:"url" yaml:"url"`
@@ -30,9 +36,12 @@ type Plan struct {
 		Match(context.Context, []Node) ([]bool, error)
 		Active() bool
 	} `json:"-" yaml:"-"`
-	GeneralEvidence     *Report                                                            `json:"-" yaml:"-"`
-	ServiceEvidence     map[string]ServiceResult                                           `json:"-" yaml:"-"`
-	ServiceChecks       map[string]ServiceCheck                                            `json:"service_checks,omitempty" yaml:"service_checks"`
+	PreparedFilter       [3]string                                                          `json:"-" yaml:"-"`
+	GeneralEvidence      *Report                                                            `json:"-" yaml:"-"`
+	GeneralEvidenceByKey map[string]Report                                                  `json:"-" yaml:"-"`
+	ServiceEvidence      map[string]ServiceResult                                           `json:"-" yaml:"-"`
+	ServiceEvidenceByKey map[string]map[string]ServiceResult                                `json:"-" yaml:"-"`
+	ServiceChecks        map[string]ServiceCheck                                            `json:"service_checks,omitempty" yaml:"service_checks"`
 	ExitIPURL           string                                                             `json:"exit_ip_url,omitempty" yaml:"exit_ip_url"`
 	LookupIP            func(context.Context, string, int, string) (IPResult, bool, error) `json:"-" yaml:"-"`
 	SaveIP              func(context.Context, IPResult) error                              `json:"-" yaml:"-"`

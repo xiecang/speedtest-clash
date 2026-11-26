@@ -92,6 +92,49 @@ func TestParseTuicURL(t *testing.T) {
 	assert.True(t, bool(p.UdpOverStream))
 }
 
+func TestHysteriaPortHoppingWithoutPortAndRejectEmptyPorts(t *testing.T) {
+	for _, kind := range []string{"hysteria", "hysteria2"} {
+		p := clash.Proxies{
+			Type:     kind,
+			Name:     "hop-" + kind,
+			Server:   "example.com",
+			Ports:    "20000-30000,40000",
+			Password: "secret",
+			Up:       "50",
+			Down:     "100",
+		}
+		out, _, err := Clash2sing(clash.Clash{Proxies: []clash.Proxies{p}}, model.SING114)
+		assert.NoError(t, err)
+		if assert.Len(t, out, 1) {
+			assert.Equal(t, 0, out[0].ServerPort)
+			assert.Equal(t, []string{"20000:30000", "40000:40000"}, out[0].ServerPorts)
+		}
+
+		empty := clash.Proxies{Type: kind, Name: "empty-" + kind, Server: "example.com"}
+		_, _, err = comm(&empty)
+		assert.Error(t, err)
+	}
+	s, _, err := comm(&clash.Proxies{Type: "hysteria2", Server: "example.com", Port: "443"})
+	assert.NoError(t, err)
+	_, err = hysteia2(&clash.Proxies{Type: "hysteria2", Server: "example.com"}, s, model.SING114)
+	assert.Error(t, err)
+}
+
+func TestParseURLNilUserDoesNotPanic(t *testing.T) {
+	for _, raw := range []string{
+		"tuic://example.com:443#tuic",
+		"anytls://example.com:443?sni=example.com#anytls",
+		"hysteria2://example.com:443#hy2",
+		"vless://example.com:443#vless",
+	} {
+		p, err := ParseURL(raw)
+		assert.NoError(t, err)
+		assert.Equal(t, "example.com", p.Server)
+	}
+	_, err := ParseURL("ss://example.com:443#ss")
+	assert.Error(t, err)
+}
+
 func TestTrojanFingerprintUsesClientFingerprint(t *testing.T) {
 	p, err := ParseURL("trojan://pass@example.com:443?fp=chrome#node")
 	assert.NoError(t, err)

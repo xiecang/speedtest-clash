@@ -51,10 +51,10 @@ func (s *sourceSpool) decodeYAMLParts(content []byte) (map[string]string, error)
 	offset := 0
 	for _, line := range bytes.SplitAfter(content, []byte("\n")) {
 		if len(line) > 0 && line[0] != ' ' && line[0] != '\t' && line[0] != '-' && line[0] != '#' && line[0] != '\n' && line[0] != '\r' {
-			if key, _, ok := bytes.Cut(line, []byte(":")); ok {
-				key = bytes.TrimSpace(key)
+			if colonIdx := bytes.IndexByte(line, ':'); colonIdx >= 0 {
+				key := bytes.TrimSpace(line[:colonIdx])
 				if !bytes.ContainsAny(key, "{}[]") {
-					fields = append(fields, yamlField{strings.Trim(string(key), "\"'"), offset, offset + len(key) + 1})
+					fields = append(fields, yamlField{strings.Trim(string(key), "\"'"), offset, offset + colonIdx + 1})
 				}
 			}
 		}
@@ -90,22 +90,107 @@ func (s *sourceSpool) decodeYAMLParts(content []byte) (map[string]string, error)
 			}
 			continue
 		}
-		if len(raw) > 2<<20 {
-			return nil, errors.New("non-proxy YAML field exceeds 2MiB syntax budget")
-		}
-		var doc map[string]any
-		if err := yaml.Unmarshal(raw, &doc); err != nil {
-			return nil, errors.New("invalid YAML field")
-		}
 		if field.key == "proxy-providers" {
+			if len(raw) > 2<<20 {
+				return nil, errors.New("proxy-providers YAML field exceeds 2MiB syntax budget")
+			}
+			var doc map[string]any
+			if err := yaml.Unmarshal(raw, &doc); err != nil {
+				return nil, errors.New("invalid YAML field")
+			}
 			found = true
 			providers = s.providerURLs(doc[field.key])
+			continue
+		}
+		if err := validateNonProxyYAMLSection(raw, content[field.headerEnd:end]); err != nil {
+			return nil, err
 		}
 	}
 	if !found {
 		return nil, errors.New("source contains no proxy fields")
 	}
 	return providers, nil
+}
+
+func validateNonProxyYAMLSection(raw, body []byte) error {
+	if len(raw) > 64<<10 && bytes.IndexAny(body, "&*") < 0 {
+		if ok, err := validateChunkedYAMLSequence(body); ok {
+			if err == nil {
+				return nil
+			}
+			// If no quotes exist in body, chunk failure is guaranteed to be a real syntax error.
+			if bytes.IndexAny(body, "\"'") < 0 {
+				return err
+			}
+		}
+	}
+	var doc yaml.Node
+	if err := yaml.Unmarshal(raw, &doc); err != nil {
+		return errors.New("invalid YAML field")
+	}
+	if len(doc.Content) != 1 || doc.Content[0].Kind != yaml.MappingNode {
+		return errors.New("invalid YAML field")
+	}
+	return nil
+}
+
+func validateChunkedYAMLSequence(body []byte) (bool, error) {
+	trimmed := bytes.TrimSpace(body)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		return true, nil
+	}
+	if trimmed[0] == '[' {
+		items, err := yamlFlowItems(trimmed)
+		if err != nil {
+			return true, errors.New("invalid YAML field")
+		}
+		for _, item := range items {
+			var node yaml.Node
+			if err := yaml.Unmarshal(item, &node); err != nil {
+				return true, errors.New("invalid YAML field")
+			}
+		}
+		return true, nil
+	}
+	indent := -1
+	offset := 0
+	chunkStart := -1
+	for _, line := range bytes.SplitAfter(body, []byte("\n")) {
+		text := bytes.TrimLeft(line, " ")
+		spaces := len(line) - len(text)
+		if indent < 0 {
+			clean := bytes.TrimSpace(line)
+			if len(clean) == 0 || clean[0] == '#' {
+				offset += len(line)
+				continue
+			}
+			if text[0] != '-' || (len(text) > 1 && text[1] != ' ' && text[1] != '\n' && text[1] != '\r') {
+				return false, nil
+			}
+			indent = spaces
+			chunkStart = offset
+			offset += len(line)
+			continue
+		}
+		if len(text) > 0 && text[0] == '-' && (len(text) == 1 || text[1] == ' ' || text[1] == '\n' || text[1] == '\r') && spaces == indent {
+			if offset-chunkStart >= 32<<10 {
+				var node yaml.Node
+				if err := yaml.Unmarshal(body[chunkStart:offset], &node); err != nil || len(node.Content) != 1 || node.Content[0].Kind != yaml.SequenceNode {
+					return true, errors.New("invalid YAML field")
+				}
+				chunkStart = offset
+			}
+		}
+		offset += len(line)
+	}
+	if indent < 0 {
+		return false, nil
+	}
+	var node yaml.Node
+	if err := yaml.Unmarshal(body[chunkStart:], &node); err != nil || len(node.Content) != 1 || node.Content[0].Kind != yaml.SequenceNode {
+		return true, errors.New("invalid YAML field")
+	}
+	return true, nil
 }
 
 func (s *sourceSpool) decodeYAMLSequence(raw []byte) error {

@@ -164,6 +164,7 @@ func TestAuditMatrixStreams(t *testing.T) {
 				base := probe.ProbeHandler(probe.ProbeOptions{FrameInterval: 10 * time.Millisecond})
 				h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					if strings.HasSuffix(r.URL.Path, "/sse") && (kind == "missing_done" || kind == "sequence_gap" || kind == "busy" || kind == "idle_drop" || kind == "active_stall") {
+						w.Header().Set("X-Node-Quality-Probe", "2")
 						w.Header().Set("Content-Type", "text/event-stream")
 						if kind == "busy" {
 							w.WriteHeader(503)
