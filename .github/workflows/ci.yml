@@ -4,6 +4,10 @@ on:
   push:
   pull_request:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
@@ -19,7 +23,27 @@ jobs:
         with:
           go-version-file: go.mod
           cache-dependency-path: go.sum
+      - name: Check gofmt
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "${unformatted}" ]; then
+            echo "The following files are not gofmt-formatted:"
+            echo "${unformatted}"
+            exit 1
+          fi
+      - name: Verify Go modules
+        run: go mod verify
       - name: Go vet
         run: go vet -tags "${GO_BUILD_TAGS}" ./...
+      - name: Cross-compile release targets & verify archive files
+        run: |
+          for target in linux/amd64 linux/arm64 darwin/arm64 windows/amd64; do
+            GOOS="${target%/*}" GOARCH="${target#*/}" CGO_ENABLED=0 \
+              go build -tags "${GO_BUILD_TAGS}" -trimpath -ldflags "-s -w" -o /dev/null ./cmd/node-quality
+          done
+          for f in LICENSE README.md THIRD_PARTY_NOTICES.md docs/V2.md docs/FILTERS.md internal/filter/UPSTREAM.md; do
+            test -f "${f}"
+          done
+          ls internal/filter/assets/*LICENSE.txt >/dev/null
       - name: Go test (-race)
-        run: go test -race -tags "${GO_BUILD_TAGS}" ./...
+        run: go test -race -timeout 10m -tags "${GO_BUILD_TAGS}" ./...

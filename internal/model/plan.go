@@ -42,22 +42,22 @@ type Plan struct {
 	ServiceEvidence      map[string]ServiceResult                                           `json:"-" yaml:"-"`
 	ServiceEvidenceByKey map[string]map[string]ServiceResult                                `json:"-" yaml:"-"`
 	ServiceChecks        map[string]ServiceCheck                                            `json:"service_checks,omitempty" yaml:"service_checks"`
-	ExitIPURL           string                                                             `json:"exit_ip_url,omitempty" yaml:"exit_ip_url"`
-	LookupIP            func(context.Context, string, int, string) (IPResult, bool, error) `json:"-" yaml:"-"`
-	SaveIP              func(context.Context, IPResult) error                              `json:"-" yaml:"-"`
-	TargetKeys          []string                                                           `json:"target_keys,omitempty" yaml:"-"`
-	Core                Core                                                               `json:"core" yaml:"core"`
-	Profile             string                                                             `json:"profile" yaml:"profile"`
-	ProbeURL            string                                                             `json:"probe_url" yaml:"probe_url"`
-	ProbeToken          string                                                             `json:"-" yaml:"probe_token"`
-	DownloadBytes       int64                                                              `json:"download_bytes" yaml:"download_bytes"`
-	DownloadConcurrency int                                                                `json:"download_concurrency" yaml:"download_concurrency"`
-	SampleWindow        time.Duration                                                      `json:"sample_window" yaml:"sample_window"`
-	ProbeTimeout        time.Duration                                                      `json:"probe_timeout" yaml:"probe_timeout"`
-	LivenessConcurrency int                                                                `json:"liveness_concurrency" yaml:"liveness_concurrency"`
-	AI                  AIPlan                                                             `json:"ai" yaml:"ai"`
-	ServiceURLs         map[string]string                                                  `json:"service_urls,omitempty" yaml:"service_urls"`
-	IPProviders         map[string]string                                                  `json:"ip_providers,omitempty" yaml:"ip_providers"`
+	ExitIPURL            string                                                             `json:"exit_ip_url,omitempty" yaml:"exit_ip_url"`
+	LookupIP             func(context.Context, string, int, string) (IPResult, bool, error) `json:"-" yaml:"-"`
+	SaveIP               func(context.Context, IPResult) error                              `json:"-" yaml:"-"`
+	TargetKeys           []string                                                           `json:"target_keys,omitempty" yaml:"-"`
+	Core                 Core                                                               `json:"core" yaml:"core"`
+	Profile              string                                                             `json:"profile" yaml:"profile"`
+	ProbeURL             string                                                             `json:"probe_url" yaml:"probe_url"`
+	ProbeToken           string                                                             `json:"-" yaml:"probe_token"`
+	DownloadBytes        int64                                                              `json:"download_bytes" yaml:"download_bytes"`
+	DownloadConcurrency  int                                                                `json:"download_concurrency" yaml:"download_concurrency"`
+	SampleWindow         time.Duration                                                      `json:"sample_window" yaml:"sample_window"`
+	ProbeTimeout         time.Duration                                                      `json:"probe_timeout" yaml:"probe_timeout"`
+	LivenessConcurrency  int                                                                `json:"liveness_concurrency" yaml:"liveness_concurrency"`
+	AI                   AIPlan                                                             `json:"ai" yaml:"ai"`
+	ServiceURLs          map[string]string                                                  `json:"service_urls,omitempty" yaml:"service_urls"`
+	IPProviders          map[string]string                                                  `json:"ip_providers,omitempty" yaml:"ip_providers"`
 	// ProbeTLSConfig is set only by callers explicitly trusting a private test CA.
 	ProbeTLSConfig *tls.Config `json:"-" yaml:"-"`
 	WorkerID       string      `json:"worker_id" yaml:"worker_id"`
