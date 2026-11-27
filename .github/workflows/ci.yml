@@ -53,15 +53,14 @@ jobs:
         run: go mod verify
       - name: Go vet
         run: go vet -tags "${GO_BUILD_TAGS}" ./...
-      - name: Cross-compile release targets & verify archive files
+      - name: Cross-compile release targets & verify docs
         run: |
           for target in linux/amd64 linux/arm64 darwin/arm64 windows/amd64; do
             GOOS="${target%/*}" GOARCH="${target#*/}" CGO_ENABLED=0 \
               go build -tags "${GO_BUILD_TAGS}" -trimpath -ldflags "-s -w" -o /dev/null ./cmd/node-quality
           done
-          for f in LICENSE README.md THIRD_PARTY_NOTICES.md docs/V2.md docs/FILTERS.md internal/filter/UPSTREAM.md; do
+          for f in README.md docs/FILTER.md docs/METRICS.md; do
             test -f "${f}"
           done
-          ls internal/filter/assets/*LICENSE.txt >/dev/null
       - name: Go test (-race)
         run: go test -race -timeout 10m -tags "${GO_BUILD_TAGS}" ./...

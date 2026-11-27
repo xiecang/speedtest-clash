@@ -4,10 +4,11 @@ go 1.25.5
 
 require (
 	github.com/coder/websocket v1.8.14
+	github.com/expr-lang/expr v1.18.1
 	github.com/metacubex/mihomo v1.19.32
 	github.com/sagernet/sing v0.9.6-0.20260922013354-87c33f17688f
 	github.com/sagernet/sing-box v1.14.2
-	github.com/stretchr/testify v1.12.1
+	github.com/sagernet/sing-tun v0.9.6-0.20260924001923-ddaa4ca25e3b
 	golang.org/x/sys v0.47.0
 	golang.org/x/time v0.15.0
 	gopkg.in/yaml.v3 v3.0.1
@@ -26,6 +27,7 @@ require (
 	github.com/metacubex/sing-tun v0.4.27 // indirect
 	github.com/oschwald/maxminddb-golang v1.13.1 // indirect
 	github.com/stangelandcl/ppmd v0.1.1 // indirect
+	github.com/stretchr/testify v1.12.1 // indirect
 	github.com/ulikunitz/xz v0.5.15 // indirect
 )
 
@@ -146,7 +148,7 @@ require (
 	github.com/metacubex/tfo-go v0.0.0-20260623020846-376a77860b8c // indirect
 	github.com/metacubex/tls v0.1.8 // indirect
 	github.com/metacubex/utls v1.8.8 // indirect
-	github.com/metacubex/wazero v0.0.0-20260628025728-9ae6bdcf2a7d
+	github.com/metacubex/wazero v0.0.0-20260628025728-9ae6bdcf2a7d // indirect
 	github.com/metacubex/wireguard-go v0.0.0-20250820062549-a6cecdd7f57f // indirect
 	github.com/metacubex/yamux v0.0.0-20250918083631-dd5f17c0be49 // indirect
 	github.com/metacubex/zerotier-go v0.0.0-20260813124750-13fa6f45da5f // indirect
@@ -214,7 +216,6 @@ require (
 	github.com/sagernet/sing-shadowsocks2 v0.2.1 // indirect
 	github.com/sagernet/sing-shadowtls v0.2.1 // indirect
 	github.com/sagernet/sing-snell v0.0.0-20260829071736-20f2eaec77c3 // indirect
-	github.com/sagernet/sing-tun v0.9.6-0.20260924001923-ddaa4ca25e3b
 	github.com/sagernet/sing-usbip v0.0.0-20260817040617-28bd42667eca // indirect
 	github.com/sagernet/sing-vmess v0.2.8 // indirect
 	github.com/sagernet/smux v1.5.50-sing-box-mod.1 // indirect

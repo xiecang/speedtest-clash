@@ -1,81 +1,148 @@
-# node-quality V2
+# node-quality
 
-Go 节点转换、质量检测及受控探针库。Module `github.com/xiecang/node-quality/v2`，包名 `nodequality`，CLI `node-quality`。GPL-3.0-only，第三方原始版权及许可见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。V1 源码可通过 `v1-before-v2` 标签查阅，不提供 V1 API 兼容层。
+`node-quality` 是一个纯 Go 实现的代理节点多格式无损转换、双内核真实流量质量评估与受控探针引擎，可作为独立 CLI 工具运行，也可作为无状态的 Go SDK 嵌入上层系统。
 
-## 职责边界
+## 核心优势
 
-本库仅负责导入/转换、内存中的检测与报告、受控探针。它不维护业务数据库，不保存检测历史或节点准入状态，不负责 worker 调度、outbox/ACK、排名、分组和订阅发布；这些由 xcproxy 实现。调用者可注入 IP 缓存回调，默认不持久化。CLI 输出到标准输出或显式指定的文件，不会创建质量数据库。
+- **原生嵌入双内核，零外部进程依赖**：内置 **Mihomo `v1.19.32`** 与 **sing-box `v1.14.2`** 出站运行时，进程内直接拨号，无需外部可执行文件、不接管系统路由、不创建全局 TUN 网卡。
+- **单趟无损双向转换**：原生实现 Clash YAML ↔ sing-box 1.14 JSON ↔ 分享链接（URI）互转，完整支持 TLS ECH、Reality、uTLS、TCP Brutal、ShadowTLS 链、WireGuard Endpoints、Snell v4、SSH、Hysteria2 端口跳跃与混淆等现代特性；遇到目标格式无法无损表达的字段直接报错诊断，绝不静默丢弃安全配置。
+- **面向真实长连接与 AI 负载的质量评估**：除冷/热连接延迟与并发下载有效吞吐（Goodput）外，内置受控探针协议，同时验证 **HTTP/1.1 SSE、HTTP/2 真协商 SSE、WebSocket** 三路长连接在主动静默窗口（Idle Gap）后的真实存活与恢复能力。
+- **严谨的故障归因与带宽预算隔离**：区分节点自身故障（`node`）、本机网络/句柄耗尽（`environment`）、探针设施异常（`probe`）与路径未知故障（`unknown`），避免因本地抖动或探针限流误杀健康节点；内置多任务共享令牌桶 `Budget`，按应用层实读字节精确控速。
+- **高性能强类型节点筛选**：基于 [`expr-lang/expr`](https://github.com/expr-lang/expr) 字节码虚拟机与归一化节点视图（`filter.Env`），屏蔽 Clash 与 sing-box 字段命名差异，微秒级完成数万节点筛选与依赖链拓扑剪枝。
 
-嵌入内核的间接依赖可能包含其缓存存储组件，不等于本库拥有质量数据库。仓库内 `.codegraph/` 是开发工具索引，不属于运行时或发布产物。
+---
 
-## 代码入口
+## 模块结构
 
-根包只保留公开类型别名和函数转发，调用者继续使用 `nodequality`，节点和报告不经过中间对象复制。
-
-| 目录 | 负责内容 |
+| 包路径 | 职责说明 |
 |---|---|
-| `internal/model` | 节点身份、依赖图、计划和报告数据模型 |
-| `internal/codec` | URI / Mihomo / sing-box 编解码、名称引用和规则转换 |
-| `internal/source` | 来源获取、暂存、完整校验和分批输出 |
-| `internal/engine` | 两个原生内核的能力、批次、拨号及生命周期 |
-| `internal/measure` | 轻检、通用/AI/可选服务测量、IP 缓存回调和带宽预算 |
-| `internal/probe`、`internal/httpapi` | 受控探针协议和 HTTP 接口 |
-| `tests/integration` | 从公开 API 验证兼容性、规模和真实内核行为 |
+| `github.com/xiecang/node-quality/v2` | 质量评估核心入口（`Evaluate`、`Plan`、`Report`、`Budget`、`ServerHandler`） |
+| `github.com/xiecang/node-quality/v2/codec` | Clash / sing-box / URI 编解码、订阅源流式安全加载（含 `\|` 多源合并与递归 `proxy-providers`）、路由规则转换 |
+| `github.com/xiecang/node-quality/v2/filter` | 基于 `expr` 的强类型表达式筛选与代理链依赖图剪枝（`Prune`） |
+| `github.com/xiecang/node-quality/v2/engine` | 嵌入式 Mihomo 与 sing-box 批量出站生命周期管理、二分故障节点隔离与配置校验 |
+| `github.com/xiecang/node-quality/v2/probe` | 零缓冲受控探针服务端（`/api/v2/probe/{health,download,sse,ws}`） |
 
-私有测量断言与实现放在同包；跨组件测试使用公开 API。`internal/clash2singbox` 保留第三方转换代码和版权边界。
+---
 
-## 本地构建
+## 安装与构建
 
-最低 Go **1.25.5**；固定 Mihomo **v1.19.32**、sing-box **v1.14.2**。二者直接嵌入 Go 运行时，不创建 TUN、不改系统路由、不启动每节点子进程。生产不需要 cvt、Deno 或 sing-box 可执行文件。
+环境要求：**Go 1.25.5+**。编译时需启用双内核特性构建标签（`Makefile` 已默认配置）：
 
 ```sh
+TAGS="with_quic,with_utls,with_wireguard,with_gvisor,with_clash_api"
+
+# 构建二进制至 ./dist/node-quality
 make build
+
+# 运行测试与竞态检查
 make test
-make vet
 make race
-./dist/node-quality capabilities
 ```
 
-构建必须带 `with_quic,with_utls,with_wireguard,with_gvisor,with_clash_api`（Makefile 已配置）。`capabilities` 展示实际构建标签。缺失内核协议支持或配置不可表达记为 `unknown`，不能当作劣质节点。
+---
+
+## CLI 快速上手
+
+### 1. 启动受控探针服务
+
+在公网测试目标机部署探针服务（非回环地址监听强制要求设置 `NODE_QUALITY_TOKEN`；支持直接配置 TLS 证书或置于支持 HTTP/2 与 WebSocket 的反向代理之后）：
 
 ```sh
-./dist/node-quality convert --source nodes.yaml --format sing-box-json
-./dist/node-quality evaluate --source nodes.yaml --core sing-box --probe-url https://probe.example --profile ai --ai-concurrency 10
-NODE_QUALITY_TOKEN=your-secret ./dist/node-quality probe-server --listen 127.0.0.1:8070
+NODE_QUALITY_TOKEN="your-secret-token" \
+  ./dist/node-quality probe-server \
+  -listen 0.0.0.0:8443 \
+  -tls-cert /path/to/fullchain.pem \
+  -tls-key /path/to/privkey.pem
 ```
 
-跨机器探针使用 HTTPS；原生 TLS 加 `--tls-cert` / `--tls-key`，或在可信反向代理后部署。H2 测试验证真实协议协商，不接受 H1 回退。
+### 2. 订阅转换与筛选
 
-## Go API
+支持本地文件、`http(s)://` 订阅链接（支持 `|` 拼接合并多个订阅）、Base64 订阅及 `data:` URI：
+
+```sh
+# 将 Clash 订阅筛选后转换为 sing-box 1.14 JSON
+./dist/node-quality convert \
+  -source "https://sub1.example.com/clash|https://sub2.example.com/uri" \
+  -filter 'name matches "(?i)香港|hk|日本|jp" and tls and udp' \
+  -format sing-box-json > singbox-outbounds.json
+```
+
+### 3. 节点质量评估
+
+支持四种评估模式（`-profile`）：
+- `availability`：单次快速连通性轻检；
+- `general`：5 次冷/热连接探针健康检查 + 并发下载吞吐采样 + 出口 IP 画像查询；
+- `ai`：在 `general` 合格候选基础上，并发执行 HTTP/1.1 SSE、HTTP/2 SSE 与 WebSocket 长连接静默恢复压测；
+- `services`：独立校验 OpenAI、Anthropic、Imgur 或自定义 HTTP 端点的地区解锁与可达性。
+
+```sh
+NODE_QUALITY_TOKEN="your-secret-token" \
+  ./dist/node-quality evaluate \
+  -source ./nodes.yaml \
+  -core sing-box \
+  -probe-url https://probe.example.com:8443 \
+  -profile ai \
+  -ai-concurrency 5 \
+  -max-bytes-per-second 20971520 > reports.json
+```
+
+---
+
+## Go SDK 示例
 
 ```go
-import nq "github.com/xiecang/node-quality/v2"
+package main
 
-decoded, err := nq.Decode(content)
-output, err := nq.Encode(decoded.Nodes, nq.SingBoxJSON)
-output, diagnostics, err := nq.Convert(content, nq.ClashYAML)
-plan := nq.DefaultPlan()
-plan.ProbeURL = "https://probe.example"
-reports, err := nq.Evaluate(ctx, decoded.Nodes, plan, nq.NewBudget(10<<20))
-handler := nq.ProbeHandler(nq.ProbeOptions{Token: token})
+import (
+	"context"
+	"fmt"
+
+	nq "github.com/xiecang/node-quality/v2"
+	"github.com/xiecang/node-quality/v2/codec"
+	"github.com/xiecang/node-quality/v2/engine"
+)
+
+func main() {
+	ctx := context.Background()
+
+	// 1. 解析任意支持格式（Clash YAML / sing-box JSON / Base64 URI）并自动解析前置代理依赖链
+	decoded, err := codec.Decode([]byte(`proxies:
+  - {name: hk-01, type: vless, server: hk.example.com, port: 443, uuid: 00000000-0000-4000-8000-000000000001, tls: true}
+`))
+	if err != nil {
+		panic(err)
+	}
+
+	// 2. 无损导出为结构化 sing-box 1.14 出站对象或字节流
+	sbBytes, err := codec.Encode(decoded.Nodes, codec.SingBoxJSON)
+	if err != nil {
+		panic(err)
+	}
+	fmt.Printf("sing-box bytes: %d\n", len(sbBytes))
+
+	// 3. 执行受控探针评估（多并发任务共享同一带宽预算）
+	plan := nq.DefaultPlan()
+	plan.Core = engine.SingBox
+	plan.Profile = "general"
+	plan.ProbeURL = "https://probe.example.com:8443"
+	plan.ProbeToken = "your-secret-token"
+	plan.Filter = `tls and port == 443`
+
+	budget := nq.NewBudget(50<<20, 4) // 共享 50 MiB/s 上限，最多 4 节点并发下载
+	reports, err := nq.Evaluate(ctx, decoded.Nodes, plan, budget)
+	if err != nil {
+		panic(err)
+	}
+	for _, r := range reports {
+		fmt.Printf("node=%s status=%s goodput=%.2f MiB/s\n",
+			r.NodeKey[:12], r.Status, r.Metrics.GoodputBytesPerSecond/(1<<20))
+	}
+}
 ```
 
-共享同一个 `Budget` 才能保证整个 worker 的额度。它在读取前等待额度，按实读字节计费，短读退回未用额度，取消不会退回已读字节。HTTP/SSE/WS transport 按节点、内核和协议独立；取消/批次完成关闭空闲连接和内核实例。代理链整体检测；`TargetKeys` 指定待测链路根，依赖只装载。单批根及依赖最多 200。
+---
 
-指标定义与缺失语义见 [docs/METRICS.md](docs/METRICS.md)。格式、报告、探针及接口详见 [docs/V2.md](docs/V2.md)。与本地 cvt 的行为参考位于 `testdata/cvt-reference.json`；Deno 仅用于开发时重新生成参照。
+## 进阶文档
 
-## 来源加载与轻检
-
-`LoadSourceDetailed(ctx, source, client, emit)` 返回 `SourceSummary`，先完整校验代次/依赖，再分批输出可用节点；独立不支持条目明确诊断。严格Decode/Convert接口不变。支持Data URL、旧Proxy字段与SSR/Mieru/SS插件URI；格式或固定内核不能表达的设置不静默丢弃。地区、提示节点过滤及展示名称由xcproxy负责。
-
-`Plan.Profile` 支持 general、ai、availability、services。availability仅连通性，不能提供general通过；services最多3个可选检查，CheckRevision独立于核心计划，匹配旧结果保留原测量时间。AI仅复用同节点修订/内核版本/worker/environment及当前定义的新鲜下载，仍重做健康与三协议长流。详情见 [docs/METRICS.md](docs/METRICS.md)。
-
-节点筛选、V1 正则兼容与使用边界：参见 [docs/FILTERS.md](docs/FILTERS.md)。
-
-### Worker-wide parallel budget
-
-`NewBudget(bytesPerSecond)` retains its single-node download slot. Use `NewBudgetWithConcurrency(100<<20, 8)` for eight concurrent download nodes sharing one 100 MiB/s budget; handle its validation error and share the returned budget across every job and core in the worker. `Budget.Stats()` reports actual download reads, aggregate slot waiting time and active download nodes. Report metrics include the configured node concurrency separately from streams per node. Queue waiting remains excluded from goodput.
-
-### Complete empty source results
-
-`LoadSourceRequestDetailed` strictly loads one `SourceRequest`, including all recursive providers, while honoring `AllowLocalFiles` (false by default). `ErrNoNodes` identifies a completely parsed generation with no supported nodes; fetch, malformed document, dependency and provider failures remain separate errors. Existing `LoadSourceDetailed` behavior is preserved, including returning an error for an empty generation. Business decisions such as empty-subscription archival belong to xcproxy.
+- [节点筛选表达式语法参考 (`docs/FILTER.md`)](docs/FILTER.md)
+- [评估指标与故障归因定义 (`docs/METRICS.md`)](docs/METRICS.md)

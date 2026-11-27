@@ -98,6 +98,8 @@ github.com/ericlagergren/subtle v0.0.0-20220507045147-890d697da010 h1:fuGucgPk5d
 github.com/ericlagergren/subtle v0.0.0-20220507045147-890d697da010/go.mod h1:JtBcj7sBuTTRupn7c2bFspMDIObMJsVK8TeUvpShPok=
 github.com/ericlagergren/testutil v0.0.0-20220814024112-d21c9429edc2 h1:j9adob+s2qXdvdeJywrVifDfHAIq0XwoaK/0q4D1BGw=
 github.com/ericlagergren/testutil v0.0.0-20220814024112-d21c9429edc2/go.mod h1:E4aJHbNMb6zjyVd1Mrpf3FIJ6kAtnVUq2yl0T6DHZ/I=
+github.com/expr-lang/expr v1.18.1 h1:mu6I2eTkwUgMP+Q4KgS9Ipc1CrukUpRrG9PsQYPv9js=
+github.com/expr-lang/expr v1.18.1/go.mod h1:8/vRC7+7HBzESEqt5kKpYXxrxkr31SaO8r40VO/1IT4=
 github.com/florianl/go-nfqueue/v2 v2.1.0 h1:Fywt30TY/evxyDySpXjxQ1jsRW7nQbLpOhELqpr4068=
 github.com/florianl/go-nfqueue/v2 v2.1.0/go.mod h1:8PKUM5rYoVFO5IZV1bifx4/b0jHAglKkHXr9PRwzi4Y=
 github.com/frankban/quicktest v1.14.6 h1:7Xjx+VpznH+oBnejlPUj8oUpdxnVs4f8XU8WnHkI4W8=

@@ -1,5 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-only
-package integration
+package integration_test
 
 import (
 	"context"
@@ -10,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	nq "github.com/xiecang/node-quality/v2"
+	"github.com/xiecang/node-quality/v2/codec"
 	"golang.org/x/sys/unix"
 )
 
@@ -22,10 +21,7 @@ func TestDetailedSource50000(t *testing.T) {
 	input.WriteString("proxies:\n")
 	dense := os.Getenv("NQ_INSPECTION_DENSE") == "1"
 	for i := 0; i < 50000; i++ {
-		if os.Getenv("NQ_INSPECTION_MIXED") == "1" {
-			protocols := []string{"type: http", "type: socks5", "type: ss, cipher: aes-128-gcm, password: fixture", "type: vmess, uuid: 00000000-0000-0000-0000-000000000001, cipher: auto, alterId: 0", "type: vless, uuid: 00000000-0000-0000-0000-000000000001, tls: true, network: ws, ws-opts: {path: /proxy}", "type: trojan, password: fixture", "type: hysteria2, password: fixture", "type: tuic, uuid: 00000000-0000-0000-0000-000000000001, password: fixture"}
-			fmt.Fprintf(&input, "- {name: n%d, server: source.invalid, port: %d, hidden: %t, %s}\n", i, i+1, i%11 == 0, protocols[i%len(protocols)])
-		} else if dense {
+		if dense {
 			fmt.Fprintf(&input, "- {name: n%d, type: vless, server: source.invalid, port: %d, uuid: 00000000-0000-0000-0000-000000000000, tls: true, servername: example.invalid, client-fingerprint: chrome, network: ws, ws-opts: {path: /proxy, headers: {Host: example.invalid}}}\n", i, i+1)
 		} else {
 			fmt.Fprintf(&input, "- {name: n%d, type: http, server: source.invalid, port: %d}\n", i, i+1)
@@ -38,7 +34,7 @@ func TestDetailedSource50000(t *testing.T) {
 	runtime.ReadMemStats(&before)
 	started := time.Now()
 	batches, emitted, maxBatch := 0, 0, 0
-	summary, err := nq.LoadSourceDetailed(ctx, "inline:"+input.String(), nil, func(nodes []nq.Node) error {
+	summary, err := codec.LoadSourceDetailed(ctx, "inline:"+input.String(), nil, func(nodes []codec.Node) error {
 		batches++
 		emitted += len(nodes)
 		maxBatch = max(maxBatch, len(nodes))

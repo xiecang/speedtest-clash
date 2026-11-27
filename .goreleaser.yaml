@@ -4,6 +4,7 @@ before:
   hooks:
     - go mod tidy
     - go generate ./...
+
 builds:
   - env:
       - CGO_ENABLED=0
@@ -24,15 +25,9 @@ builds:
 archives:
   - format: tar.gz
     files:
-      - LICENSE
       - README.md
-      - THIRD_PARTY_NOTICES.md
-      - LICENSES/**
-      - docs/V2.md
-      - docs/FILTERS.md
-      - internal/filter/UPSTREAM.md
-      - internal/filter/assets/*LICENSE.txt
-    # this name template makes the OS and Arch compatible with the results of `uname`.
+      - docs/FILTER.md
+      - docs/METRICS.md
     name_template: >-
       {{ .ProjectName }}_
       {{- title .Os }}_
@@ -41,12 +36,15 @@ archives:
       {{- else }}{{ .Arch }}{{ end }}
       {{- if .Arm }}v{{ .Arm }}{{ end }}
     format_overrides:
-    - goos: windows
-      format: zip
+      - goos: windows
+        format: zip
+
 checksum:
   name_template: 'checksums.txt'
+
 snapshot:
   name_template: "{{ incpatch .Version }}-next"
+
 changelog:
   sort: asc
   filters:
