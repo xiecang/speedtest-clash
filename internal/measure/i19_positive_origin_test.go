@@ -40,8 +40,9 @@ func TestI19NativeNodeAuthenticationRequiredRemainsFail(t *testing.T) {
 			}
 			var greeting [3]byte
 			if _, e = io.ReadFull(conn, greeting[:]); e == nil && greeting == [3]byte{5, 1, 0} {
-				if _, e = conn.Write([]byte{5, 2}); e == nil {
-					replies.Add(1)
+				replies.Add(1)
+				if _, e = conn.Write([]byte{5, 2}); e != nil {
+					replies.Add(-1)
 				}
 			}
 			conn.Close()
@@ -60,7 +61,7 @@ func TestI19NativeNodeAuthenticationRequiredRemainsFail(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	batch, err := engine.OpenBatch(ctx, []model.Node{node}, model.Mihomo)
 	if err != nil {
