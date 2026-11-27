@@ -12,7 +12,13 @@ import (
 	"strings"
 
 	uri "github.com/metacubex/mihomo/common/convert"
+	mlog "github.com/metacubex/mihomo/log"
 )
+
+func init() {
+	// Prevent Mihomo's URI converter from printing raw proxy URIs/credentials to stderr on malformed inputs.
+	mlog.SetLevel(mlog.SILENT)
+}
 
 func DecodeURI(line string) (map[string]any, error) {
 	if scheme, rest, ok := strings.Cut(line, "://"); ok {

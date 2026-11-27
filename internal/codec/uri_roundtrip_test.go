@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	mlog "github.com/metacubex/mihomo/log"
 	"github.com/xiecang/node-quality/v2/internal/clash2singbox/model/clash"
 	"github.com/xiecang/node-quality/v2/internal/filter"
 	"github.com/xiecang/node-quality/v2/internal/model"
@@ -227,4 +228,13 @@ func TestDeepCloneMapAndFastIdentityParity(t *testing.T) {
 			}
 		}
 	}
+}
+
+func TestDecodeURISilencesMihomoConverterLogs(t *testing.T) {
+	if mlog.Level() != mlog.SILENT {
+		t.Fatalf("expected Mihomo log level SILENT, got %v", mlog.Level())
+	}
+	// Malformed vmess URI with missing port that previously triggered mihomo/log.Warnln with raw line.
+	bad := "vmess://" + base64.StdEncoding.EncodeToString([]byte(`{"v":"2","ps":"secret","add":"1.2.3.4","id":"5c040f1d-45db-43bd-8d46-e4950e433735"}`))
+	_, _ = DecodeURI(bad)
 }
