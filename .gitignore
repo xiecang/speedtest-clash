@@ -49,3 +49,4 @@ dist/
 
 ignoreme*
 
+.codegraph/

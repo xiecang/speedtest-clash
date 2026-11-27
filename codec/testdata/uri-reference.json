@@ -1,0 +1,71 @@
+[
+  {
+    "uri": "http://user:password@example.invalid:8080#http",
+    "config": {
+      "name": "http",
+      "server": "example.invalid",
+      "port": 8080,
+      "type": "http",
+      "username": "user",
+      "password": "password"
+    }
+  },
+  {
+    "uri": "https://user:password@example.invalid:443#https",
+    "config": {
+      "name": "https",
+      "server": "example.invalid",
+      "port": 443,
+      "type": "http",
+      "username": "user",
+      "password": "password",
+      "tls": true,
+      "skip-cert-verify": true
+    }
+  },
+  {
+    "uri": "trojan://password@example.invalid:443?sni=example.invalid#trojan",
+    "config": {
+      "name": "trojan",
+      "server": "example.invalid",
+      "port": 443,
+      "type": "trojan",
+      "password": "password",
+      "sni": "example.invalid",
+      "client-fingerprint": "chrome",
+      "skip-cert-verify": true,
+      "udp": true
+    }
+  },
+  {
+    "uri": "hysteria2://password@example.invalid:443?sni=example.invalid#hy2",
+    "config": {
+      "name": "hy2",
+      "server": "example.invalid",
+      "port": 443,
+      "type": "hysteria2",
+      "password": "password",
+      "sni": "example.invalid",
+      "skip-cert-verify": true
+    }
+  },
+  {
+    "uri": "vless://e28783bb-5a3f-4b0b-8472-692fa8f9f51b@example.invalid:443?security=tls&type=ws&path=%2Fchat&sni=example.invalid#vless",
+    "config": {
+      "name": "vless",
+      "server": "example.invalid",
+      "port": 443,
+      "type": "vless",
+      "uuid": "e28783bb-5a3f-4b0b-8472-692fa8f9f51b",
+      "network": "ws",
+      "ws-opts": {
+        "path": "/chat"
+      },
+      "tls": true,
+      "servername": "example.invalid",
+      "client-fingerprint": "chrome",
+      "skip-cert-verify": true,
+      "udp": true
+    }
+  }
+]

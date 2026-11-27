@@ -4,6 +4,7 @@ before:
   hooks:
     - go mod tidy
     - go generate ./...
+
 builds:
   - env:
       - CGO_ENABLED=0
@@ -11,12 +12,22 @@ builds:
       - linux
       - windows
       - darwin
-    main: ./app/cli/main.go
+    main: ./cmd/node-quality
+    binary: node-quality
+    tags:
+      - with_quic
+      - with_utls
+      - with_wireguard
+      - with_gvisor
+      - with_clash_api
     ldflags: -s -w
 
 archives:
   - format: tar.gz
-    # this name template makes the OS and Arch compatible with the results of `uname`.
+    files:
+      - README.md
+      - docs/FILTER.md
+      - docs/METRICS.md
     name_template: >-
       {{ .ProjectName }}_
       {{- title .Os }}_
@@ -25,12 +36,15 @@ archives:
       {{- else }}{{ .Arch }}{{ end }}
       {{- if .Arm }}v{{ .Arm }}{{ end }}
     format_overrides:
-    - goos: windows
-      format: zip
+      - goos: windows
+        format: zip
+
 checksum:
   name_template: 'checksums.txt'
+
 snapshot:
   name_template: "{{ incpatch .Version }}-next"
+
 changelog:
   sort: asc
   filters:

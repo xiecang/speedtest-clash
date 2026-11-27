@@ -1,0 +1,66 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - master
+      - main
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  GO_BUILD_TAGS: with_quic,with_utls,with_wireguard,with_gvisor,with_clash_api
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Cache Go modules
+        uses: actions/cache@v4
+        with:
+          path: ~/go/pkg/mod
+          key: go-mod-${{ runner.os }}-${{ hashFiles('go.mod', 'go.sum') }}
+          restore-keys: |
+            go-mod-${{ runner.os }}-
+      - name: Cache Go build and test artifacts
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/go-build
+          key: go-build-${{ runner.os }}-${{ hashFiles('**/*.go', 'go.mod', 'go.sum') }}
+          restore-keys: |
+            go-build-${{ runner.os }}-
+      - name: Check gofmt
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "${unformatted}" ]; then
+            echo "The following files are not gofmt-formatted:"
+            echo "${unformatted}"
+            exit 1
+          fi
+      - name: Verify Go modules
+        run: go mod verify
+      - name: Go vet
+        run: go vet -tags "${GO_BUILD_TAGS}" ./...
+      - name: Cross-compile release targets & verify docs
+        run: |
+          for target in linux/amd64 linux/arm64 darwin/arm64 windows/amd64; do
+            GOOS="${target%/*}" GOARCH="${target#*/}" CGO_ENABLED=0 \
+              go build -tags "${GO_BUILD_TAGS}" -trimpath -ldflags "-s -w" -o /dev/null ./cmd/node-quality
+          done
+          for f in README.md docs/FILTER.md docs/METRICS.md; do
+            test -f "${f}"
+          done
+      - name: Go test (-race)
+        run: go test -race -timeout 10m -tags "${GO_BUILD_TAGS}" ./...
